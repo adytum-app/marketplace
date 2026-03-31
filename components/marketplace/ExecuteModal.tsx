@@ -20,10 +20,13 @@ import {
   Plus,
 } from "lucide-react";
 import {
-  PayPerUseInvention,
+  FullInvention,
   ExecutionResult,
+  PayPerUseInvention,
+  NashInvention,
   calculateTieredPrice,
   getPriceTierLabel,
+  isNash,
 } from "@/types";
 import { CONTRACTS, formatUSDC } from "@/config/wagmi";
 import { ADYTUM_ABI, ERC20_ABI } from "@/config/abi";
@@ -47,7 +50,7 @@ function mapApiResultToDomain(api: ApiExecutionResult): ExecutionResult {
 }
 
 interface ExecuteModalProps {
-  invention: PayPerUseInvention;
+  invention: FullInvention;
   isOpen: boolean;
   onClose: () => void;
 }
@@ -71,9 +74,11 @@ export function ExecuteModal({
   const [inputData, setInputData] = useState<string>("{}");
   const [result, setResult] = useState<ExecutionResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [creditsToBuy, setCreditsToBuy] = useState<number>(5); // Default bulk purchase
+  const [creditsToBuy, setCreditsToBuy] = useState<number>(5);
 
-  // Fetch user's actual usage from contract
+  const isNashMode = isNash(invention);
+
+  // Fetch user's actual usage from contract (Only for Pay-Per-Use)
   const {
     data: usageTracker,
     isLoading: usageLoading,
@@ -84,11 +89,11 @@ export function ExecuteModal({
     functionName: "getUsageTracker",
     args: address ? [invention.id, address] : undefined,
     query: {
-      enabled: !!address && isOpen,
+      enabled: !!address && isOpen && !isNashMode,
     },
   });
 
-  // Fetch user's credit balance
+  // Fetch user's credit balance (Only for Pay-Per-Use)
   const {
     data: creditBalance,
     isLoading: creditsLoading,
@@ -99,7 +104,7 @@ export function ExecuteModal({
     functionName: "creditBalances",
     args: address ? [invention.id, address] : undefined,
     query: {
-      enabled: !!address && isOpen,
+      enabled: !!address && isOpen && !isNashMode,
     },
   });
 
@@ -107,11 +112,22 @@ export function ExecuteModal({
   const userTotalCalls = usageTracker?.totalCalls ?? BigInt(0);
   const isFlagged = usageTracker?.flaggedForExtraction ?? false;
   const userCredits = creditBalance ?? BigInt(0);
-  const hasCredits = userCredits > BigInt(0);
+  const hasCredits = !isNashMode && userCredits > BigInt(0);
 
-  // Calculate current price based on user's actual usage
-  const currentPrice = calculateTieredPrice(invention.config, userTotalCalls);
-  const priceTier = getPriceTierLabel(userTotalCalls, invention.config);
+  // Calculate dynamic current price based on the model
+  const currentPrice: bigint = isNashMode
+    ? (invention as NashInvention).config.trialFee
+    : calculateTieredPrice(
+        (invention as PayPerUseInvention).config,
+        userTotalCalls,
+      );
+
+  const priceTier = isNashMode
+    ? "Nash Trial Fee"
+    : getPriceTierLabel(
+        userTotalCalls,
+        (invention as PayPerUseInvention).config,
+      );
 
   // Contract writes
   const { writeContract: approve, data: approveTxHash } = useWriteContract();
@@ -131,7 +147,7 @@ export function ExecuteModal({
     hash: executeTxHash,
   });
 
-  // Wrapped in useCallback to prevent stale closures
+  // Handles standard execution or Nash Trial execution
   const handleExecute = useCallback(async () => {
     try {
       setStep("executing");
@@ -142,23 +158,21 @@ export function ExecuteModal({
       execute({
         address: CONTRACTS.ADYTUM_MARKETPLACE,
         abi: ADYTUM_ABI,
-        functionName: "execute",
+        functionName: isNashMode ? "nashTrial" : "execute",
         args: [invention.id, inputHash],
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Execution failed");
       setStep("error");
     }
-  }, [inputData, execute, invention.id]);
+  }, [inputData, execute, invention.id, isNashMode]);
 
-  // Wrapped in useCallback to prevent stale closures
   const handleProcessing = useCallback(async () => {
     try {
       setStep("processing");
-
       const parsedInput = JSON.parse(inputData);
 
-      // Request TEE execution
+      // Request TEE execution (identical for both models)
       const request = await requestExecution(
         invention.id,
         address!,
@@ -166,7 +180,6 @@ export function ExecuteModal({
         executeTxHash!,
       );
 
-      // Wait for result
       const executionResult = await waitForExecution(request.execution_id);
 
       if (executionResult.status === "completed") {
@@ -182,11 +195,9 @@ export function ExecuteModal({
     }
   }, [inputData, invention.id, address, executeTxHash]);
 
-  // Buy credits after approval
   const handleBuyCredits = useCallback(async () => {
     try {
       setStep("buying_credits");
-
       buyCredits({
         address: CONTRACTS.ADYTUM_MARKETPLACE,
         abi: ADYTUM_ABI,
@@ -199,14 +210,18 @@ export function ExecuteModal({
     }
   }, [buyCredits, invention.id, creditsToBuy]);
 
-  // Handle approval confirmation → buy credits
+  // Handle approval confirmation routing
   useEffect(() => {
     if (approveConfirmed && step === "approving") {
-      handleBuyCredits();
+      if (isNashMode) {
+        handleExecute(); // Nash goes straight to execute after approve
+      } else {
+        handleBuyCredits(); // PPU goes to buy credits
+      }
     }
-  }, [approveConfirmed, step, handleBuyCredits]);
+  }, [approveConfirmed, step, isNashMode, handleBuyCredits, handleExecute]);
 
-  // Handle buy credits confirmation → execute
+  // Handle buy credits confirmation → execute (PPU only)
   useEffect(() => {
     if (buyCreditsConfirmed && step === "buying_credits") {
       refetchCredits();
@@ -214,24 +229,49 @@ export function ExecuteModal({
     }
   }, [buyCreditsConfirmed, step, handleExecute, refetchCredits]);
 
-  // Handle execute confirmation - refetch credits immediately since on-chain decrement happened
+  // Handle execute confirmation
   useEffect(() => {
     if (executeConfirmed && step === "executing") {
-      // Refetch credits NOW - the on-chain balance changed with this tx
-      refetchCredits();
-      refetchUsage();
+      if (!isNashMode) {
+        refetchCredits();
+        refetchUsage();
+      }
       handleProcessing();
     }
-  }, [executeConfirmed, step, handleProcessing, refetchCredits, refetchUsage]);
+  }, [
+    executeConfirmed,
+    step,
+    handleProcessing,
+    isNashMode,
+    refetchCredits,
+    refetchUsage,
+  ]);
 
-  // Approve USDC for buying credits
+  // Single-run exact approval (For Nash Trials)
+  const handleApproveForTrial = useCallback(async () => {
+    try {
+      setStep("approving");
+      setError(null);
+      approve({
+        address: CONTRACTS.USDC,
+        abi: ERC20_ABI,
+        functionName: "approve",
+        args: [CONTRACTS.ADYTUM_MARKETPLACE, currentPrice],
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Approval failed");
+      setStep("error");
+    }
+  }, [approve, currentPrice]);
+
+  // Bulk credits approval (For Pay-Per-Use)
   const handleApproveForCredits = useCallback(async () => {
     try {
       setStep("approving");
       setError(null);
-
-      const totalCost = BigInt(creditsToBuy) * invention.config.pricePerCall;
-
+      const totalCost =
+        BigInt(creditsToBuy) *
+        (invention as PayPerUseInvention).config.pricePerCall;
       approve({
         address: CONTRACTS.USDC,
         abi: ERC20_ABI,
@@ -242,18 +282,31 @@ export function ExecuteModal({
       setError(err instanceof Error ? err.message : "Approval failed");
       setStep("error");
     }
-  }, [approve, creditsToBuy, invention.config.pricePerCall]);
+  }, [approve, creditsToBuy, invention]);
 
-  // If user has credits, skip approve → execute directly
+  // Master submit router
   const handleSubmit = useCallback(async () => {
-    if (hasCredits) {
-      // Direct execution - no approval needed
-      handleExecute();
+    if (isNashMode) {
+      if (currentPrice === BigInt(0)) {
+        handleExecute(); // Free trial
+      } else {
+        handleApproveForTrial();
+      }
     } else {
-      // Need to approve and buy credits first
-      handleApproveForCredits();
+      if (hasCredits) {
+        handleExecute();
+      } else {
+        handleApproveForCredits();
+      }
     }
-  }, [hasCredits, handleExecute, handleApproveForCredits]);
+  }, [
+    isNashMode,
+    currentPrice,
+    hasCredits,
+    handleExecute,
+    handleApproveForTrial,
+    handleApproveForCredits,
+  ]);
 
   const handleClose = () => {
     setStep("input");
@@ -267,20 +320,17 @@ export function ExecuteModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      {/* Backdrop */}
       <div
         className="absolute inset-0 bg-black/80 backdrop-blur-sm"
         onClick={handleClose}
       />
 
-      {/* Modal */}
       <div className="relative bg-adytum-obsidian border border-adytum-void-100 rounded-xl max-w-lg w-full max-h-[90vh] overflow-hidden">
-        {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-adytum-void-100">
           <div className="flex items-center gap-2">
             <Zap className="h-5 w-5 text-adytum-vault" />
             <h2 className="font-display text-lg font-semibold text-white">
-              Execute Invention
+              {isNashMode ? "Execute Nash Trial" : "Execute Invention"}
             </h2>
           </div>
           <button
@@ -291,11 +341,9 @@ export function ExecuteModal({
           </button>
         </div>
 
-        {/* Content */}
         <div className="p-4 overflow-y-auto max-h-[calc(90vh-120px)]">
           {step === "input" && (
             <InputStep
-              invention={invention}
               inputData={inputData}
               setInputData={setInputData}
               currentPrice={currentPrice}
@@ -305,7 +353,8 @@ export function ExecuteModal({
               creditsToBuy={creditsToBuy}
               setCreditsToBuy={setCreditsToBuy}
               isFlagged={isFlagged}
-              isLoading={usageLoading || creditsLoading}
+              isNashMode={isNashMode}
+              isLoading={!isNashMode && (usageLoading || creditsLoading)}
               onSubmit={handleSubmit}
               onClose={handleClose}
             />
@@ -329,9 +378,11 @@ export function ExecuteModal({
             <LoadingStep
               title="Executing"
               description={
-                hasCredits
-                  ? "Using 1 credit to execute..."
-                  : "Confirm the execution transaction in your wallet..."
+                isNashMode
+                  ? "Confirm the trial execution in your wallet..."
+                  : hasCredits
+                    ? "Using 1 credit to execute..."
+                    : "Confirm the execution transaction in your wallet..."
               }
             />
           )}
@@ -348,8 +399,8 @@ export function ExecuteModal({
             <ResultStep
               result={result}
               onClose={handleClose}
-              creditsRemaining={userCredits}
-              isRefetchingCredits={creditsLoading}
+              creditsRemaining={!isNashMode ? userCredits : undefined}
+              isRefetchingCredits={!isNashMode ? creditsLoading : false}
             />
           )}
 
@@ -367,7 +418,6 @@ export function ExecuteModal({
 // ============================================
 
 function InputStep({
-  invention,
   inputData,
   setInputData,
   currentPrice,
@@ -377,11 +427,11 @@ function InputStep({
   creditsToBuy,
   setCreditsToBuy,
   isFlagged,
+  isNashMode,
   isLoading,
   onSubmit,
   onClose,
 }: {
-  invention: PayPerUseInvention;
   inputData: string;
   setInputData: (v: string) => void;
   currentPrice: bigint;
@@ -391,12 +441,13 @@ function InputStep({
   creditsToBuy: number;
   setCreditsToBuy: (v: number) => void;
   isFlagged: boolean;
+  isNashMode: boolean;
   isLoading: boolean;
   onSubmit: () => void;
   onClose: () => void;
 }) {
   const [isValidJson, setIsValidJson] = useState(true);
-  const hasCredits = userCredits > BigInt(0);
+  const hasCredits = !isNashMode && userCredits > BigInt(0);
 
   const handleInputChange = (value: string) => {
     setInputData(value);
@@ -408,7 +459,6 @@ function InputStep({
     }
   };
 
-  // If user is flagged for extraction, show error
   if (isFlagged) {
     return (
       <div className="text-center py-8">
@@ -420,11 +470,6 @@ function InputStep({
           Your access to this invention has been suspended due to suspected
           extraction attempts.
         </p>
-        <div className="p-3 bg-red-500/10 rounded-lg border border-red-500/20 mb-4">
-          <p className="text-xs text-red-300">
-            If you believe this is an error, please contact support.
-          </p>
-        </div>
         <button onClick={onClose} className="btn-secondary w-full">
           Close
         </button>
@@ -434,14 +479,9 @@ function InputStep({
 
   return (
     <div className="space-y-4">
-      {/* Credits balance - show prominently if user has credits */}
-      {hasCredits && (
+      {!isNashMode && hasCredits && (
         <div
-          className={`p-3 rounded-lg border ${
-            userCredits <= BigInt(2)
-              ? "bg-amber-500/10 border-amber-500/20"
-              : "bg-green-500/10 border-green-500/20"
-          }`}
+          className={`p-3 rounded-lg border ${userCredits <= BigInt(2) ? "bg-amber-500/10 border-amber-500/20" : "bg-green-500/10 border-green-500/20"}`}
         >
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -455,19 +495,7 @@ function InputStep({
                 {userCredits > BigInt(1) ? "s" : ""} remaining
               </span>
             </div>
-            <span
-              className={`text-xs ${userCredits <= BigInt(2) ? "text-amber-300" : "text-green-300"}`}
-            >
-              {userCredits <= BigInt(2)
-                ? "Running low!"
-                : "1 credit = 1 execution"}
-            </span>
           </div>
-          {userCredits <= BigInt(2) && (
-            <p className="text-xs text-amber-300 mt-2">
-              ⚠️ Consider topping up to avoid approval popups on your next run.
-            </p>
-          )}
         </div>
       )}
 
@@ -491,18 +519,16 @@ function InputStep({
             <TrendingUp className="h-3 w-3" />
             <span>{priceTier}</span>
           </div>
-          <span>Your executions: {userTotalCalls.toString()}</span>
+          {!isNashMode && (
+            <span>Your executions: {userTotalCalls.toString()}</span>
+          )}
         </div>
       </div>
 
-      {/* Buy credits option - show if no credits OR running low */}
-      {(!hasCredits || userCredits <= BigInt(2)) && (
+      {/* Buy credits option - Only for PPU */}
+      {!isNashMode && (!hasCredits || userCredits <= BigInt(2)) && (
         <div
-          className={`p-3 rounded-lg border ${
-            hasCredits
-              ? "bg-amber-500/5 border-amber-500/20"
-              : "bg-adytum-void-100 border-adytum-void-100"
-          }`}
+          className={`p-3 rounded-lg border ${hasCredits ? "bg-amber-500/5 border-amber-500/20" : "bg-adytum-void-100 border-adytum-void-100"}`}
         >
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
@@ -542,57 +568,31 @@ function InputStep({
               </span>
             </div>
           </div>
-          <p className="text-xs text-adytum-smoke mt-2">
-            💡 With credits, future executions are instant — no wallet popups!
-          </p>
         </div>
       )}
 
-      {/* Input schema hint */}
-      {invention.metadata.inputSchema && (
-        <div className="p-3 bg-adytum-void-100 rounded-lg">
-          <p className="text-xs text-adytum-smoke mb-2">
-            Expected input schema:
-          </p>
-          <code className="text-xs text-adytum-amethyst-300">
-            {JSON.stringify(invention.metadata.inputSchema, null, 2)}
-          </code>
-        </div>
-      )}
-
-      {/* Input textarea */}
       <div>
         <label className="label">Input Data (JSON)</label>
         <textarea
           value={inputData}
           onChange={(e) => handleInputChange(e.target.value)}
           rows={6}
-          className={`input font-mono text-sm ${
-            !isValidJson ? "border-red-500 focus:border-red-500" : ""
-          }`}
+          className={`input font-mono text-sm ${!isValidJson ? "border-red-500 focus:border-red-500" : ""}`}
           placeholder='{"text": "Your input here..."}'
         />
-        {!isValidJson && (
-          <p className="mt-1 text-xs text-red-400">Invalid JSON format</p>
-        )}
       </div>
 
-      {/* TEE info */}
-      <div className="flex items-start gap-2 p-3 bg-adytum-amethyst-500/10 rounded-lg">
-        <Shield className="h-4 w-4 text-adytum-amethyst-400 shrink-0 mt-0.5" />
-        <p className="text-xs text-adytum-amethyst-200">
-          Your input will be processed in a TEE (Trusted Execution Environment).
-          You will receive the output but never see the underlying code.
-        </p>
-      </div>
-
-      {/* Submit button */}
       <button
         onClick={onSubmit}
         disabled={!isValidJson || isLoading}
         className="btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        {hasCredits ? (
+        {isNashMode ? (
+          <>
+            <Play className="h-4 w-4 mr-2" />
+            Run Trial ({formatUSDC(currentPrice)} USDC)
+          </>
+        ) : hasCredits ? (
           <>
             <Zap className="h-4 w-4 mr-2" />
             Execute (1 credit)
@@ -624,7 +624,6 @@ function LoadingStep({
         {title}
       </h3>
       <p className="text-sm text-adytum-smoke">{description}</p>
-
       {showAttestation && (
         <div className="mt-6 p-3 bg-adytum-vault/10 rounded-lg border border-adytum-vault/20">
           <div className="flex items-center justify-center gap-2 text-sm text-adytum-vault-light">
@@ -650,7 +649,6 @@ function ResultStep({
 }) {
   return (
     <div className="space-y-4">
-      {/* Success header */}
       <div className="text-center">
         <CheckCircle className="h-12 w-12 text-adytum-vault mx-auto mb-3" />
         <h3 className="font-display text-lg font-semibold text-white">
@@ -658,7 +656,6 @@ function ResultStep({
         </h3>
       </div>
 
-      {/* Credits remaining - show loading state while refetching */}
       {isRefetchingCredits ? (
         <div className="p-3 bg-adytum-void-100 rounded-lg border border-adytum-void-100">
           <div className="flex items-center gap-2">
@@ -670,11 +667,7 @@ function ResultStep({
         </div>
       ) : creditsRemaining !== undefined && creditsRemaining > BigInt(0) ? (
         <div
-          className={`p-3 rounded-lg border ${
-            creditsRemaining <= BigInt(2)
-              ? "bg-amber-500/10 border-amber-500/20"
-              : "bg-green-500/10 border-green-500/20"
-          }`}
+          className={`p-3 rounded-lg border ${creditsRemaining <= BigInt(2) ? "bg-amber-500/10 border-amber-500/20" : "bg-green-500/10 border-green-500/20"}`}
         >
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -688,13 +681,6 @@ function ResultStep({
                 {creditsRemaining > BigInt(1) ? "s" : ""} remaining
               </span>
             </div>
-            <span
-              className={`text-xs ${creditsRemaining <= BigInt(2) ? "text-amber-300" : "text-green-300"}`}
-            >
-              {creditsRemaining <= BigInt(2)
-                ? "Running low!"
-                : "Run again instantly!"}
-            </span>
           </div>
         </div>
       ) : creditsRemaining !== undefined && creditsRemaining === BigInt(0) ? (
@@ -708,46 +694,12 @@ function ResultStep({
         </div>
       ) : null}
 
-      {/* Output */}
       <div>
         <label className="label">Output</label>
         <pre className="p-3 bg-adytum-void-100 rounded-lg overflow-x-auto text-sm text-white font-mono">
           {JSON.stringify(result.output, null, 2)}
         </pre>
       </div>
-
-      {/* Metrics */}
-      {result.metrics && (
-        <div className="grid grid-cols-2 gap-3">
-          <div className="p-3 bg-adytum-void-100 rounded-lg">
-            <p className="text-xs text-adytum-smoke mb-1">Execution Time</p>
-            <p className="text-sm font-semibold text-white">
-              {result.metrics.executionTimeMs}ms
-            </p>
-          </div>
-          <div className="p-3 bg-adytum-void-100 rounded-lg">
-            <p className="text-xs text-adytum-smoke mb-1">Memory Used</p>
-            <p className="text-sm font-semibold text-white">
-              {result.metrics.memoryUsedMb}MB
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* Attestation */}
-      {result.attestation && (
-        <div className="p-3 bg-adytum-vault/10 rounded-lg border border-adytum-vault/20">
-          <div className="flex items-center gap-2 mb-2">
-            <Shield className="h-4 w-4 text-adytum-vault" />
-            <span className="text-sm font-medium text-adytum-vault-light">
-              TEE Attestation
-            </span>
-          </div>
-          <code className="text-xs text-adytum-smoke break-all">
-            {result.attestation.slice(0, 64)}...
-          </code>
-        </div>
-      )}
 
       <button onClick={onClose} className="btn-secondary w-full">
         Close
