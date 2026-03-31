@@ -2,13 +2,12 @@
 
 import { useState } from "react";
 import { useParams } from "next/navigation";
-import { useAccount } from "wagmi";
+import { useAccount, useReadContract } from "wagmi";
 import Link from "next/link";
 import {
   ArrowLeft,
   Shield,
   Clock,
-  //Users,
   ExternalLink,
   Copy,
   Check,
@@ -20,14 +19,15 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { getMockInvention } from "@/lib/mockData";
-import { formatUSDC } from "@/config/wagmi";
+import { CONTRACTS, formatUSDC } from "@/config/wagmi";
+import { ADYTUM_ABI } from "@/config/abi";
 import {
   CategoryLabels,
   CategoryIcons,
-  // InventionCategory,
   MonetizationModel,
   ModelLabels,
   NashPhase,
+  NashBid,
   calculateTieredPrice,
   getPriceTierLabel,
   isPayPerUse,
@@ -40,7 +40,7 @@ import { useBlockTimeOffset } from "@/hooks/useBlockTimeOffset";
 
 export default function InventionDetailPage() {
   const params = useParams();
-  const { address, isConnected } = useAccount();
+  const { isConnected } = useAccount();
   const { timeOffset } = useBlockTimeOffset();
   const [copied, setCopied] = useState(false);
   const [showExecuteModal, setShowExecuteModal] = useState(false);
@@ -233,6 +233,7 @@ export default function InventionDetailPage() {
                     isConnected={isConnected}
                     timeOffset={timeOffset}
                     onBid={() => setShowNashModal(true)}
+                    onExecuteTrial={() => setShowExecuteModal(true)}
                   />
                 )}
               </div>
@@ -242,13 +243,15 @@ export default function InventionDetailPage() {
       </div>
 
       {/* Modals */}
-      {showExecuteModal && isPayPerUse(invention) && (
-        <ExecuteModal
-          invention={invention}
-          isOpen={showExecuteModal}
-          onClose={() => setShowExecuteModal(false)}
-        />
-      )}
+      {showExecuteModal &&
+        (isPayPerUse(invention) ||
+          (isNash(invention) && invention.config.allowTrialsDuring)) && (
+          <ExecuteModal
+            invention={invention}
+            isOpen={showExecuteModal}
+            onClose={() => setShowExecuteModal(false)}
+          />
+        )}
       {showNashModal && isNash(invention) && (
         <NashBidModal
           invention={invention}
@@ -434,6 +437,7 @@ function NashSidebar({
   isConnected,
   timeOffset,
   onBid,
+  onExecuteTrial,
 }: {
   invention: ReturnType<typeof getMockInvention> & {
     model: MonetizationModel.NashNegotiation;
@@ -441,8 +445,22 @@ function NashSidebar({
   isConnected: boolean;
   timeOffset: bigint;
   onBid: () => void;
+  onExecuteTrial: () => void;
 }) {
   const { config } = invention;
+  const { address } = useAccount();
+
+  // Actively fetch if the user has submitted a bid to enable the trial button
+  const { data: nashBid } = useReadContract({
+    address: CONTRACTS.ADYTUM_MARKETPLACE,
+    abi: ADYTUM_ABI,
+    functionName: "getNashBid",
+    args: isConnected && address ? [invention.id, address] : undefined,
+    query: { enabled: !!isConnected && !!address },
+  });
+
+  const hasBid = (nashBid as NashBid | undefined)?.submitted ?? false;
+  const trialCount = (nashBid as NashBid | undefined)?.trialCount ?? BigInt(0);
 
   const getPhaseInfo = () => {
     switch (config.phase) {
@@ -525,7 +543,7 @@ function NashSidebar({
           <div className="flex items-center justify-between">
             <span className="text-sm text-adytum-smoke">Trial fee</span>
             <span className="text-sm text-adytum-seal-light">
-              {formatUSDC(config.trialFee)}
+              {formatUSDC(config.trialFee)} USDC
             </span>
           </div>
         )}
@@ -551,7 +569,7 @@ function NashSidebar({
         </div>
       )}
 
-      {/* Bid button */}
+      {/* Primary Action Button (Bid / Reveal) */}
       {(config.phase === NashPhase.Open ||
         config.phase === NashPhase.Reveal) && (
         <button
@@ -567,6 +585,27 @@ function NashSidebar({
               : "Reveal Bid"}
         </button>
       )}
+
+      {/* Secondary Action Button (Trial) */}
+      {config.allowTrialsDuring &&
+        (config.phase === NashPhase.Open ||
+          config.phase === NashPhase.Reveal) && (
+          <button
+            onClick={onExecuteTrial}
+            disabled={
+              !isConnected || !hasBid || trialCount >= config.maxTrialsPerBidder
+            }
+            className="w-full btn-secondary mt-3 disabled:opacity-50"
+            title={!hasBid ? "Submit a sealed bid first to unlock trials" : ""}
+          >
+            <Play className="h-4 w-4 mr-2" />
+            {!hasBid
+              ? "Submit Bid to Unlock Trials"
+              : trialCount >= config.maxTrialsPerBidder
+                ? "Max Trials Reached"
+                : `Run Trial (${formatUSDC(config.trialFee)} USDC)`}
+          </button>
+        )}
 
       {config.phase === NashPhase.Settled && (
         <div className="p-4 bg-adytum-vault/10 rounded-lg text-center">
