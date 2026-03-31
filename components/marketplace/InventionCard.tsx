@@ -13,6 +13,7 @@ import {
 } from "@/types";
 import { formatUSDC } from "@/config/wagmi";
 import { LiveTimeRemainingCompact } from "@/components/ui/LiveTimeRemaining";
+import { useBlockTimeOffset } from "@/hooks/useBlockTimeOffset";
 import { Zap, Gavel, TrendingUp, Users } from "lucide-react";
 
 interface InventionCardProps {
@@ -21,6 +22,7 @@ interface InventionCardProps {
 
 export function InventionCard({ invention }: InventionCardProps) {
   const { metadata, category, model } = invention;
+  const { timeOffset } = useBlockTimeOffset();
 
   return (
     <Link href={`/invention/${invention.id}`}>
@@ -86,7 +88,9 @@ export function InventionCard({ invention }: InventionCardProps) {
 
           {/* Model-specific info */}
           {isPayPerUse(invention) && <PayPerUseInfo invention={invention} />}
-          {isNash(invention) && <NashInfo invention={invention} />}
+          {isNash(invention) && (
+            <NashInfo invention={invention} timeOffset={timeOffset} />
+          )}
         </div>
       </div>
     </Link>
@@ -128,8 +132,10 @@ function PayPerUseInfo({
 
 function NashInfo({
   invention,
+  timeOffset,
 }: {
   invention: FullInvention & { model: MonetizationModel.NashNegotiation };
+  timeOffset: bigint;
 }) {
   const { config } = invention;
   const deadline =
@@ -161,7 +167,10 @@ function NashInfo({
 
         {(config.phase === NashPhase.Open ||
           config.phase === NashPhase.Reveal) && (
-          <LiveTimeRemainingCompact deadline={deadline} />
+          <LiveTimeRemainingCompact
+            deadline={deadline}
+            timeOffset={timeOffset}
+          />
         )}
       </div>
 
