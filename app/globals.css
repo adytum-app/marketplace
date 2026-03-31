@@ -1,26 +1,194 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  body {
+    @apply bg-adytum-void text-white antialiased;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@layer components {
+  .btn-primary {
+    @apply inline-flex items-center justify-center px-6 py-3 
+           bg-adytum-amethyst-600 hover:bg-adytum-amethyst-500 
+           text-white font-medium rounded-lg
+           transition-all duration-200
+           focus:outline-none focus:ring-2 focus:ring-adytum-amethyst-400 focus:ring-offset-2 focus:ring-offset-adytum-void
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center px-6 py-3 
+           bg-adytum-obsidian border border-adytum-amethyst-500/30
+           hover:bg-adytum-obsidian-light hover:border-adytum-amethyst-500/50
+           text-white font-medium rounded-lg
+           transition-all duration-200
+           focus:outline-none focus:ring-2 focus:ring-adytum-amethyst-400 focus:ring-offset-2 focus:ring-offset-adytum-void;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center px-4 py-2
+           text-adytum-smoke-light hover:text-white
+           hover:bg-adytum-whisper
+           rounded-lg transition-all duration-200;
+  }
+
+  .card {
+    @apply bg-adytum-obsidian border border-adytum-amethyst-500/10
+           rounded-xl overflow-hidden
+           hover:border-adytum-amethyst-500/30
+           transition-all duration-300;
+  }
+
+  .card-elevated {
+    @apply shadow-lg shadow-adytum-amethyst-900/20
+           hover:shadow-xl hover:shadow-adytum-amethyst-900/30;
+  }
+
+  .input {
+    @apply w-full px-4 py-3 
+           bg-adytum-void-100 border border-adytum-amethyst-500/20
+           rounded-lg text-white placeholder-adytum-smoke
+           focus:outline-none focus:border-adytum-amethyst-500/50 focus:ring-1 focus:ring-adytum-amethyst-500/30
+           transition-all duration-200;
+  }
+
+  .label {
+    @apply block text-sm font-medium text-adytum-smoke-light mb-2;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 
+           rounded-full text-xs font-medium
+           bg-adytum-amethyst-500/20 text-adytum-amethyst-300;
+  }
+
+  .badge-vault {
+    @apply bg-adytum-vault/20 text-adytum-vault-light;
+  }
+
+  .badge-seal {
+    @apply bg-adytum-seal/20 text-adytum-seal-light;
+  }
+
+  .gradient-border {
+    @apply relative;
+    background:
+      linear-gradient(
+          var(--color-adytum-obsidian),
+          var(--color-adytum-obsidian)
+        )
+        padding-box,
+      linear-gradient(135deg, rgba(139, 92, 246, 0.5), rgba(139, 92, 246, 0.1))
+        border-box;
+    border: 1px solid transparent;
+  }
+
+  .glow-amethyst {
+    box-shadow: 0 0 40px rgba(139, 92, 246, 0.15);
+  }
+
+  .glow-vault {
+    box-shadow: 0 0 40px rgba(16, 185, 129, 0.15);
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0a0a0f;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #52525b;
+}
+
+/* RainbowKit overrides */
+[data-rk] {
+  --rk-colors-accentColor: #8b5cf6 !important;
+  --rk-colors-accentColorForeground: white !important;
+}
+
+/* Dark Mode Configuration */
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  /* Colors */
+  --color-adytum-void: #0a0a0f;
+  --color-adytum-void-50: #0d0d14;
+  --color-adytum-void-100: #12121a;
+  --color-adytum-void-200: #1a1a24;
+
+  --color-adytum-obsidian: #15151f;
+  --color-adytum-obsidian-light: #1e1e2a;
+  --color-adytum-obsidian-dark: #0c0c12;
+
+  --color-adytum-amethyst: #8b5cf6;
+  --color-adytum-amethyst-50: #f5f3ff;
+  --color-adytum-amethyst-100: #ede9fe;
+  --color-adytum-amethyst-200: #ddd6fe;
+  --color-adytum-amethyst-300: #c4b5fd;
+  --color-adytum-amethyst-400: #a78bfa;
+  --color-adytum-amethyst-500: #8b5cf6;
+  --color-adytum-amethyst-600: #7c3aed;
+  --color-adytum-amethyst-700: #6d28d9;
+  --color-adytum-amethyst-800: #5b21b6;
+  --color-adytum-amethyst-900: #4c1d95;
+
+  --color-adytum-vault: #10b981;
+  --color-adytum-vault-light: #34d399;
+  --color-adytum-vault-dark: #059669;
+
+  --color-adytum-seal: #f59e0b;
+  --color-adytum-seal-light: #fbbf24;
+  --color-adytum-seal-dark: #d97706;
+
+  --color-adytum-smoke: #71717a;
+  --color-adytum-smoke-light: #a1a1aa;
+  --color-adytum-smoke-dark: #52525b;
+
+  --color-adytum-whisper: rgba(139, 92, 246, 0.1);
+  --color-adytum-whisper-strong: rgba(139, 92, 246, 0.2);
+
+  /* Fonts (Merged from previous :root) */
+  --font-display: "Geist", Georgia, serif;
+  --font-body: "Geist", system-ui, sans-serif;
+  --font-mono: "Geist Mono", "Fira Code", monospace;
+
+  /* Background Images */
+  --background-image-gradient-adytum: linear-gradient(
+    135deg,
+    #0a0a0f 0%,
+    #15151f 50%,
+    #1a1a24 100%
+  );
+  --background-image-gradient-amethyst: linear-gradient(
+    135deg,
+    #6d28d9 0%,
+    #8b5cf6 50%,
+    #a78bfa 100%
+  );
+
+  /* Animations */
+  --animate-pulse-slow: pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-float: float 6s ease-in-out infinite;
+
+  /* Keyframes */
+  @keyframes float {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-10px);
+    }
+  }
 }
