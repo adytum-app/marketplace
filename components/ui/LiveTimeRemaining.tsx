@@ -5,6 +5,7 @@ import { Clock, AlertTriangle } from "lucide-react";
 
 interface LiveTimeRemainingProps {
   deadline: bigint;
+  timeOffset?: bigint; // Blockchain time offset (blockchain - local)
   onExpire?: () => void;
   showIcon?: boolean;
   className?: string;
@@ -20,9 +21,14 @@ interface TimeRemaining {
   expired: boolean;
 }
 
-function getTimeRemaining(deadline: bigint): TimeRemaining {
-  const now = BigInt(Math.floor(Date.now() / 1000));
-  const remaining = deadline - now;
+function getTimeRemaining(
+  deadline: bigint,
+  timeOffset: bigint = BigInt(0),
+): TimeRemaining {
+  // Adjust local time by offset to get blockchain-equivalent time
+  const localNow = BigInt(Math.floor(Date.now() / 1000));
+  const networkNow = localNow + timeOffset;
+  const remaining = deadline - networkNow;
 
   if (remaining <= BigInt(0)) {
     return {
@@ -61,9 +67,14 @@ function formatTime(time: TimeRemaining): string {
  * - > 5 minutes: every 30 seconds
  * - < 5 minutes: every 1 second (builds tension!)
  * - Expired: stops ticking
+ *
+ * @param timeOffset - Blockchain time offset from useBlockTimeOffset().
+ *                     If user's clock is 5min behind blockchain, offset = +300.
+ *                     This prevents "you have 5min left" when blockchain says 0.
  */
 export function LiveTimeRemaining({
   deadline,
+  timeOffset = BigInt(0),
   onExpire,
   showIcon = true,
   className = "",
@@ -78,9 +89,9 @@ export function LiveTimeRemaining({
 
   useEffect(() => {
     queueMicrotask(() => {
-      setTime(getTimeRemaining(deadline));
+      setTime(getTimeRemaining(deadline, timeOffset));
     });
-  }, [deadline]);
+  }, [deadline, timeOffset]);
 
   // Adaptive tick rate based on time remaining
   const tickRate = useMemo(() => {
@@ -94,7 +105,7 @@ export function LiveTimeRemaining({
     if (tickRate === null) return;
 
     const interval = setInterval(() => {
-      const newTime = getTimeRemaining(deadline);
+      const newTime = getTimeRemaining(deadline, timeOffset);
       setTime(newTime);
 
       if (newTime.expired) {
@@ -103,7 +114,7 @@ export function LiveTimeRemaining({
     }, tickRate);
 
     return () => clearInterval(interval);
-  }, [deadline, tickRate]);
+  }, [deadline, tickRate, timeOffset]);
 
   // Show placeholder during SSR / before first client update
   if (!time) {
@@ -149,14 +160,17 @@ export function LiveTimeRemaining({
  */
 export function LiveTimeRemainingCompact({
   deadline,
+  timeOffset = BigInt(0),
   onExpire,
 }: {
   deadline: bigint;
+  timeOffset?: bigint;
   onExpire?: () => void;
 }) {
   return (
     <LiveTimeRemaining
       deadline={deadline}
+      timeOffset={timeOffset}
       onExpire={onExpire}
       showIcon={false}
       className="text-sm text-white"
