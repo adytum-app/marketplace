@@ -12,22 +12,16 @@ import {
   CheckCircle,
   AlertCircle,
   Gavel,
-  // Shield,
   Lock,
-  // Clock,
   Eye,
   Key,
 } from "lucide-react";
 import { NashInvention, NashPhase, NashBid } from "@/types";
 import { LiveTimeRemaining } from "@/components/ui/LiveTimeRemaining";
-import { CONTRACTS, formatUSDC, parseUSDC } from "@/config/wagmi";
-import { ADYTUM_ABI, ERC20_ABI } from "@/config/abi";
-import {
-  generateNashBidHash,
-  generateSalt,
-  // requestKeyRelease,
-  waitForKeyRelease,
-} from "@/lib/api";
+import { useBlockTimeOffset } from "@/hooks/useBlockTimeOffset";
+import { CONTRACTS, parseUSDC } from "@/config/wagmi";
+import { ADYTUM_ABI } from "@/config/abi";
+import { generateNashBidHash, generateSalt, waitForKeyRelease } from "@/lib/api";
 
 interface NashBidModalProps {
   invention: NashInvention;
@@ -58,6 +52,7 @@ export function NashBidModal({
 }: NashBidModalProps) {
   const { address } = useAccount();
   const { config } = invention;
+  const { timeOffset } = useBlockTimeOffset();
 
   const [step, setStep] = useState<Step>(
     isWinner
@@ -88,7 +83,7 @@ export function NashBidModal({
     hash: revealTxHash,
   });
 
-  // Handle submit confirmation
+  // Handle submit confirmation - FIXED DEPENDENCIES
   useEffect(() => {
     if (submitConfirmed && step === "submitting") {
       // Store salt in localStorage for reveal phase
@@ -101,14 +96,14 @@ export function NashBidModal({
       }
       setStep("bid_success");
     }
-  }, [submitConfirmed]);
+  }, [submitConfirmed, step, salt, bidAmount, invention.id, address]);
 
-  // Handle reveal confirmation
+  // Handle reveal confirmation - FIXED DEPENDENCIES
   useEffect(() => {
     if (revealConfirmed && step === "revealing") {
       setStep("reveal_success");
     }
-  }, [revealConfirmed]);
+  }, [revealConfirmed, step]);
 
   const handleSubmitBid = async () => {
     try {
@@ -230,6 +225,7 @@ export function NashBidModal({
               invention={invention}
               bidAmount={bidAmount}
               setBidAmount={setBidAmount}
+              timeOffset={timeOffset}
               onSubmit={handleSubmitBid}
             />
           )}
@@ -242,11 +238,19 @@ export function NashBidModal({
           )}
 
           {step === "bid_success" && (
-            <BidSuccessStep invention={invention} onClose={handleClose} />
+            <BidSuccessStep
+              invention={invention}
+              timeOffset={timeOffset}
+              onClose={handleClose}
+            />
           )}
 
           {step === "reveal" && (
-            <RevealStep invention={invention} onReveal={handleRevealBid} />
+            <RevealStep
+              invention={invention}
+              timeOffset={timeOffset}
+              onReveal={handleRevealBid}
+            />
           )}
 
           {step === "revealing" && (
@@ -296,11 +300,13 @@ function BidStep({
   invention,
   bidAmount,
   setBidAmount,
+  timeOffset,
   onSubmit,
 }: {
   invention: NashInvention;
   bidAmount: string;
   setBidAmount: (v: string) => void;
+  timeOffset: bigint;
   onSubmit: () => void;
 }) {
   const { config } = invention;
@@ -313,6 +319,7 @@ function BidStep({
           <span className="text-sm text-adytum-smoke">Bid deadline</span>
           <LiveTimeRemaining
             deadline={config.bidDeadline}
+            timeOffset={timeOffset}
             className="text-adytum-seal-light"
           />
         </div>
@@ -373,9 +380,11 @@ function BidStep({
 
 function BidSuccessStep({
   invention,
+  timeOffset,
   onClose,
 }: {
   invention: NashInvention;
+  timeOffset: bigint;
   onClose: () => void;
 }) {
   return (
@@ -393,6 +402,7 @@ function BidSuccessStep({
           <span className="text-adytum-smoke">Reveal phase starts in </span>
           <LiveTimeRemaining
             deadline={invention.config.bidDeadline}
+            timeOffset={timeOffset}
             className="text-adytum-seal-light"
           />
         </div>
@@ -415,9 +425,11 @@ function BidSuccessStep({
 
 function RevealStep({
   invention,
+  timeOffset,
   onReveal,
 }: {
   invention: NashInvention;
+  timeOffset: bigint;
   onReveal: () => void;
 }) {
   return (
@@ -438,6 +450,7 @@ function RevealStep({
           <span className="text-sm text-adytum-smoke">Reveal deadline</span>
           <LiveTimeRemaining
             deadline={invention.config.revealDeadline}
+            timeOffset={timeOffset}
             className="text-adytum-seal-light"
           />
         </div>
