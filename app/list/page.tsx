@@ -2,10 +2,14 @@
 
 import { parseUSDC } from "@/config/wagmi";
 import { generateSalt, generateNashBidHash } from "@/lib/api";
+import { encryptCodeForTEE } from "@/lib/crypto";
 import { useState } from "react";
-import { useAccount } from "wagmi";
+import { useAccount, useWriteContract, usePublicClient } from "wagmi";
+import { decodeEventLog } from "viem";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import Link from "next/link";
+import { CONTRACTS } from "@/config/wagmi";
+import { ADYTUM_ABI } from "@/config/abi";
 import {
   Upload,
   Plus,
@@ -28,10 +32,35 @@ import {
   Benchmark,
 } from "@/types";
 
-type ListingStep = "model" | "form" | "uploading" | "success" | "error";
+type ListingStep =
+  | "model"
+  | "form"
+  | "uploading"
+  | "signing"
+  | "confirming"
+  | "success"
+  | "error";
+
+type NashPreparedArgs = {
+  sellerMinHash: `0x${string}`;
+  bidDeadline: number;
+  revealDeadline: number;
+  allowTrialsDuring: boolean;
+  trialFee: bigint;
+  maxTrialsPerBidder: bigint;
+};
+
+type PayPerUsePreparedArgs = {
+  pricePerCall: bigint;
+  maxCallsPerDay: number;
+  maxCallsPerMonth: number;
+  cooldownSeconds: number;
+};
 
 export default function ListInventionPage() {
   const { address, isConnected } = useAccount();
+  const { writeContractAsync } = useWriteContract();
+  const publicClient = usePublicClient();
 
   const [step, setStep] = useState<ListingStep>("model");
   const [selectedModel, setSelectedModel] = useState<MonetizationModel | null>(
@@ -108,10 +137,16 @@ export default function ListInventionPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    if (!publicClient) {
+      setError("Web3 provider not initialized");
+      setStep("error");
+      return;
+    }
+
     try {
       setStep("uploading");
 
-      let preparedArgs: Record<string, unknown> = {};
+      let preparedArgs: NashPreparedArgs | PayPerUsePreparedArgs | null = null;
       let nashSaltToSave: `0x${string}` | null = null;
       let nashPriceToSave: string | null = null;
 
@@ -119,39 +154,29 @@ export default function ListInventionPage() {
       // 1. PREPARE SMART CONTRACT ARGUMENTS
       // ==========================================
       if (selectedModel === MonetizationModel.NashNegotiation) {
-        // Calculate absolute Unix timestamps
         const currentTimestamp = Math.floor(Date.now() / 1000);
         const bidDeadline =
           currentTimestamp + nashConfig.bidDurationDays * 86400;
         const revealDeadline =
           bidDeadline + nashConfig.revealDurationDays * 86400;
 
-        // --- THE NASH SALT CHALLENGE ---
-        // 1. Generate a secure random 32-byte salt
         const salt = generateSalt();
-
-        // 2. Parse human-readable USDC to BigInt (e.g., "10.50" -> 10500000n)
         const minPriceBigInt = parseUSDC(nashConfig.minAcceptable);
-
-        // 3. Hash them together (Matches Solidity's keccak256(abi.encodePacked(price, salt)))
         const sellerBidHash = generateNashBidHash(minPriceBigInt, salt);
 
-        // Save these to variables so we can write them to localStorage AFTER the tx succeeds
         nashSaltToSave = salt;
         nashPriceToSave = nashConfig.minAcceptable;
 
         preparedArgs = {
-          sellerMinHash: sellerBidHash, // ONLY THE HASH GOES TO THE BLOCKCHAIN!
+          sellerMinHash: sellerBidHash,
           bidDeadline,
           revealDeadline,
           allowTrialsDuring: nashConfig.allowTrialsDuring,
           trialFee: nashConfig.trialFee
             ? parseUSDC(nashConfig.trialFee)
             : BigInt(0),
-          maxTrialsPerBidder: nashConfig.maxTrialsPerBidder,
+          maxTrialsPerBidder: BigInt(nashConfig.maxTrialsPerBidder),
         };
-
-        console.log("Prepared Nash Arguments:", preparedArgs);
       } else if (selectedModel === MonetizationModel.PayPerUse) {
         preparedArgs = {
           pricePerCall: parseUSDC(payPerUseConfig.pricePerCall),
@@ -159,31 +184,119 @@ export default function ListInventionPage() {
           maxCallsPerMonth: payPerUseConfig.maxCallsPerMonth,
           cooldownSeconds: payPerUseConfig.cooldownSeconds,
         };
+      }
 
-        console.log("Prepared Pay-Per-Use Arguments:", preparedArgs);
+      if (!preparedArgs) {
+        throw new Error("Failed to prepare arguments for listing");
       }
 
       // ==========================================
-      // 2. ENCRYPT, UPLOAD, AND CALL CONTRACT
+      // 2. ENCRYPT & UPLOAD TO IPFS
       // ==========================================
-      // Simulate: 1. Encrypt code, 2. Upload to IPFS, 3. Call contract
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+      const encryptedCodeBlob = await encryptCodeForTEE(inventionCode);
 
-      // ⚠️ IMPORTANT FOR PRODUCTION:
-      // When you replace the timeout above with actual Wagmi logic, you need to extract
-      // the newly created `inventionId` from the transaction receipt logs.
-      const newlyMintedInventionId = "simulated_id_123";
+      const codeFormData = new FormData();
+      codeFormData.append("file", encryptedCodeBlob, "encrypted_invention.bin");
+
+      const codeUploadRes = await fetch("/api/ipfs", {
+        method: "POST",
+        body: codeFormData,
+      });
+      const codeUploadData = await codeUploadRes.json();
+      if (!codeUploadData.cid) throw new Error("Failed to upload code to IPFS");
+      const encryptedCodeUri = `ipfs://${codeUploadData.cid}`;
+
+      const metadataJson = {
+        name: formData.title,
+        description: formData.description,
+        shortDescription: formData.shortDescription,
+        external_url: "https://adytum.network",
+        attributes: [
+          { trait_type: "Category", value: CategoryLabels[formData.category] },
+          { trait_type: "Model", value: ModelLabels[selectedModel!] },
+          ...formData.tags.map((tag) => ({ trait_type: "Tag", value: tag })),
+        ],
+        benchmarks: formData.benchmarks,
+        encryptedCodeUri: encryptedCodeUri,
+      };
+
+      const metadataFormData = new FormData();
+      metadataFormData.append("json", JSON.stringify(metadataJson));
+
+      const metadataRes = await fetch("/api/ipfs", {
+        method: "POST",
+        body: metadataFormData,
+      });
+      const metadataData = await metadataRes.json();
+      if (!metadataData.cid)
+        throw new Error("Failed to upload metadata to IPFS");
+      const finalTokenUri = `ipfs://${metadataData.cid}`;
 
       // ==========================================
-      // 3. SAVE SENSITIVE DATA TO LOCALSTORAGE
+      // 3. CALL SMART CONTRACT (WAGMI)
       // ==========================================
+      setStep("signing");
+
+      const functionToCall =
+        selectedModel === MonetizationModel.NashNegotiation
+          ? "listNashNegotiation"
+          : "listPayPerUse";
+
+      const txHash = await (writeContractAsync as unknown as (
+        config: unknown,
+      ) => Promise<`0x${string}`>)({
+        address: CONTRACTS.ADYTUM_MARKETPLACE,
+        abi: ADYTUM_ABI,
+        functionName: functionToCall,
+        args: [finalTokenUri, preparedArgs],
+      });
+
+      setStep("confirming");
+
+      // Wait for the transaction to be mined on Base L2
+      const receipt = await publicClient.waitForTransactionReceipt({
+        hash: txHash,
+      });
+
+      // ==========================================
+      // 4. EXTRACT ID & SAVE SENSITIVE DATA
+      // ==========================================
+      let newlyMintedInventionId = "";
+
+      // Decode the event logs to find the newly minted ID
+      for (const log of receipt.logs) {
+        try {
+          const decoded = decodeEventLog({
+            abi: ADYTUM_ABI,
+            data: log.data,
+            topics: log.topics,
+          });
+
+          if (decoded.eventName === "InventionListed") {
+            const eventArgs = decoded.args as { inventionId?: bigint };
+            if (eventArgs.inventionId) {
+              newlyMintedInventionId = eventArgs.inventionId.toString();
+            }
+          }
+        } catch {
+          // Ignore logs from other contracts or unmatching events
+        }
+      }
+
+      // Fallback if event decoding fails but tx succeeded
+      if (!newlyMintedInventionId) {
+        console.warn(
+          "Could not find InventionListed event. Using fallback ID.",
+        );
+        newlyMintedInventionId = txHash.slice(0, 15);
+      }
+
+      // Save Nash Secrets safely now that tx is confirmed
       if (
         selectedModel === MonetizationModel.NashNegotiation &&
         nashSaltToSave &&
         address
       ) {
-        // We tie the storage key to BOTH the invention ID and the seller's address.
-        // This prevents mixups if multiple users share a computer.
         localStorage.setItem(
           `seller_nash_salt_${newlyMintedInventionId}_${address}`,
           nashSaltToSave,
@@ -192,13 +305,11 @@ export default function ListInventionPage() {
           `seller_nash_amount_${newlyMintedInventionId}_${address}`,
           nashPriceToSave!,
         );
-        console.log(
-          "✅ Securely saved Nash salt and price to local browser storage.",
-        );
       }
 
       setStep("success");
     } catch (err) {
+      console.error(err);
       setError(err instanceof Error ? err.message : "Failed to list invention");
       setStep("error");
     }
@@ -253,17 +364,51 @@ export default function ListInventionPage() {
     );
   }
 
-  // Uploading
+  // Uploading Phase
   if (step === "uploading") {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
           <Loader2 className="h-16 w-16 text-adytum-amethyst-400 animate-spin mx-auto mb-6" />
           <h2 className="font-display text-2xl font-bold text-white mb-2">
-            Listing Your Invention
+            Encrypting & Uploading
           </h2>
           <p className="text-adytum-smoke">
-            Encrypting code, uploading to IPFS, and registering on-chain...
+            Encrypting code and uploading metadata to IPFS...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Wallet Signing Phase
+  if (step === "signing") {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <Shield className="h-16 w-16 text-adytum-vault mx-auto mb-6 animate-pulse" />
+          <h2 className="font-display text-2xl font-bold text-white mb-2">
+            Sign Transaction
+          </h2>
+          <p className="text-adytum-smoke">
+            Please confirm the transaction in your wallet to list on Base.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Blockchain Confirming Phase
+  if (step === "confirming") {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="h-16 w-16 text-adytum-vault mx-auto mb-6 animate-spin" />
+          <h2 className="font-display text-2xl font-bold text-white mb-2">
+            Confirming on Blockchain
+          </h2>
+          <p className="text-adytum-smoke">
+            Waiting for the block to be mined...
           </p>
         </div>
       </div>
