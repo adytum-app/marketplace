@@ -108,11 +108,33 @@ export function ExecuteModal({
     },
   });
 
-  // Extract values
+  // Fetch user's Nash bid to check trial count (Only for Nash)
+  const {
+    data: nashBid,
+    isLoading: bidLoading,
+    refetch: refetchBid,
+  } = useReadContract({
+    address: CONTRACTS.ADYTUM_MARKETPLACE,
+    abi: ADYTUM_ABI,
+    functionName: "getNashBid",
+    args: address ? [invention.id, address] : undefined,
+    query: {
+      enabled: !!address && isOpen && isNashMode,
+    },
+  });
+
+  // Extract PPU values
   const userTotalCalls = usageTracker?.totalCalls ?? BigInt(0);
   const isFlagged = usageTracker?.flaggedForExtraction ?? false;
   const userCredits = creditBalance ?? BigInt(0);
   const hasCredits = !isNashMode && userCredits > BigInt(0);
+
+  // Extract Nash values
+  const userTrialCount = nashBid?.trialCount ?? BigInt(0);
+  const maxTrials = isNashMode
+    ? (invention as NashInvention).config.maxTrialsPerBidder
+    : BigInt(0);
+  const hasReachedMaxTrials = isNashMode && userTrialCount >= maxTrials;
 
   // Calculate dynamic current price based on the model
   const currentPrice: bigint = isNashMode
@@ -232,7 +254,9 @@ export function ExecuteModal({
   // Handle execute confirmation
   useEffect(() => {
     if (executeConfirmed && step === "executing") {
-      if (!isNashMode) {
+      if (isNashMode) {
+        refetchBid();
+      } else {
         refetchCredits();
         refetchUsage();
       }
@@ -245,6 +269,7 @@ export function ExecuteModal({
     isNashMode,
     refetchCredits,
     refetchUsage,
+    refetchBid,
   ]);
 
   // Single-run exact approval (For Nash Trials)
@@ -316,6 +341,10 @@ export function ExecuteModal({
     onClose();
   };
 
+  const isModalLoading =
+    (!isNashMode && (usageLoading || creditsLoading)) ||
+    (isNashMode && bidLoading);
+
   if (!isOpen) return null;
 
   return (
@@ -354,7 +383,10 @@ export function ExecuteModal({
               setCreditsToBuy={setCreditsToBuy}
               isFlagged={isFlagged}
               isNashMode={isNashMode}
-              isLoading={!isNashMode && (usageLoading || creditsLoading)}
+              userTrialCount={userTrialCount}
+              maxTrials={maxTrials}
+              hasReachedMaxTrials={hasReachedMaxTrials}
+              isLoading={isModalLoading}
               onSubmit={handleSubmit}
               onClose={handleClose}
             />
@@ -428,6 +460,9 @@ function InputStep({
   setCreditsToBuy,
   isFlagged,
   isNashMode,
+  userTrialCount,
+  maxTrials,
+  hasReachedMaxTrials,
   isLoading,
   onSubmit,
   onClose,
@@ -442,6 +477,9 @@ function InputStep({
   setCreditsToBuy: (v: number) => void;
   isFlagged: boolean;
   isNashMode: boolean;
+  userTrialCount: bigint;
+  maxTrials: bigint;
+  hasReachedMaxTrials: boolean;
   isLoading: boolean;
   onSubmit: () => void;
   onClose: () => void;
@@ -502,7 +540,9 @@ function InputStep({
       {/* Pricing info */}
       <div className="p-3 bg-adytum-vault/10 rounded-lg border border-adytum-vault/20">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-sm text-adytum-smoke">Price per execution</span>
+          <span className="text-sm text-adytum-smoke">
+            {isNashMode ? "Trial fee" : "Price per execution"}
+          </span>
           {isLoading ? (
             <span className="text-lg font-semibold text-adytum-smoke">
               <Loader2 className="h-4 w-4 animate-spin inline mr-2" />
@@ -515,12 +555,26 @@ function InputStep({
           )}
         </div>
         <div className="flex items-center justify-between text-xs text-adytum-smoke">
-          <div className="flex items-center gap-2">
-            <TrendingUp className="h-3 w-3" />
-            <span>{priceTier}</span>
-          </div>
-          {!isNashMode && (
-            <span>Your executions: {userTotalCalls.toString()}</span>
+          {isNashMode ? (
+            <div className="flex items-center w-full justify-between">
+              <span>
+                Trials used: {userTrialCount.toString()} /{" "}
+                {maxTrials.toString()}
+              </span>
+              {hasReachedMaxTrials && (
+                <span className="text-red-400 font-medium">
+                  Max trials reached
+                </span>
+              )}
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center gap-2">
+                <TrendingUp className="h-3 w-3" />
+                <span>{priceTier}</span>
+              </div>
+              <span>Your executions: {userTotalCalls.toString()}</span>
+            </>
           )}
         </div>
       </div>
@@ -584,7 +638,7 @@ function InputStep({
 
       <button
         onClick={onSubmit}
-        disabled={!isValidJson || isLoading}
+        disabled={!isValidJson || isLoading || hasReachedMaxTrials}
         className="btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {isNashMode ? (
