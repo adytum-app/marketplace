@@ -14,7 +14,14 @@ import {
 import { formatUSDC } from "@/config/wagmi";
 import { LiveTimeRemainingCompact } from "@/components/ui/LiveTimeRemaining";
 import { useBlockTimeOffset } from "@/hooks/useBlockTimeOffset";
-import { Zap, Gavel, TrendingUp, Users } from "lucide-react";
+import {
+  Zap,
+  Gavel,
+  TrendingUp,
+  Users,
+  Shield,
+  ShieldAlert,
+} from "lucide-react";
 
 interface InventionCardProps {
   invention: FullInvention;
@@ -173,6 +180,32 @@ function NashInfo({
           />
         )}
       </div>
+
+      {/* Required Deposit info */}
+      {config.requiredDeposit > BigInt(0) && (
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-adytum-smoke flex items-center gap-1">
+            <ShieldAlert className="h-3 w-3" />
+            Required Deposit
+          </span>
+          <span className="text-adytum-seal-light font-medium">
+            {formatUSDC(config.requiredDeposit)} USDC
+          </span>
+        </div>
+      )}
+
+      {/* Seller Bond indicator (trust signal) */}
+      {config.sellerBond > BigInt(0) && (
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-adytum-smoke flex items-center gap-1">
+            <Shield className="h-3 w-3 text-green-400" />
+            Seller Bonded
+          </span>
+          <span className="text-green-400 font-medium">
+            {formatUSDC(config.sellerBond)} USDC
+          </span>
+        </div>
+      )}
 
       {/* Trials info */}
       {config.allowTrialsDuring && (
