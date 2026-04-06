@@ -43,7 +43,7 @@ const PAY_PER_USE_INVENTIONS: PayPerUseInvention[] = [
     config: {
       pricePerCall: BigInt(500_000), // $0.50 USDC
       maxCallsPerDay: BigInt(100),
-      maxCallsPerMonth: BigInt(2000),
+      maxCallsPer30Days: BigInt(2000),
       cooldownSeconds: BigInt(1),
       tier1Threshold: BigInt(100),
       tier1Multiplier: BigInt(15000), // 1.5x
@@ -84,7 +84,7 @@ const PAY_PER_USE_INVENTIONS: PayPerUseInvention[] = [
     config: {
       pricePerCall: BigInt(200_000), // $0.20 USDC
       maxCallsPerDay: BigInt(500),
-      maxCallsPerMonth: BigInt(10000),
+      maxCallsPer30Days: BigInt(10000),
       cooldownSeconds: BigInt(0),
       tier1Threshold: BigInt(1000),
       tier1Multiplier: BigInt(15000),
@@ -130,7 +130,7 @@ const PAY_PER_USE_INVENTIONS: PayPerUseInvention[] = [
     config: {
       pricePerCall: BigInt(5_000_000), // $5 USDC per signal
       maxCallsPerDay: BigInt(20),
-      maxCallsPerMonth: BigInt(200),
+      maxCallsPer30Days: BigInt(200),
       cooldownSeconds: BigInt(60), // 1 minute cooldown
       tier1Threshold: BigInt(50),
       tier1Multiplier: BigInt(20000), // 2x
@@ -171,7 +171,7 @@ const PAY_PER_USE_INVENTIONS: PayPerUseInvention[] = [
     config: {
       pricePerCall: BigInt(100_000), // $0.10 USDC - cheap for high volume
       maxCallsPerDay: BigInt(1000),
-      maxCallsPerMonth: BigInt(25000),
+      maxCallsPer30Days: BigInt(25000),
       cooldownSeconds: BigInt(0),
       tier1Threshold: BigInt(5000),
       tier1Multiplier: BigInt(12000), // 1.2x
@@ -218,14 +218,19 @@ const NASH_INVENTIONS: NashInvention[] = [
     config: {
       sellerBidHash:
         "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef" as `0x${string}`,
-      sellerMinRevealed: BigInt(0), // Not revealed yet
-      bidDeadline: BigInt(Math.floor(Date.now() / 1000) + 86400 * 5), // 5 days from now
-      revealDeadline: BigInt(Math.floor(Date.now() / 1000) + 86400 * 7), // 7 days from now
+      sellerMinRevealed: BigInt(0),
+      bidDeadline: BigInt(Math.floor(Date.now() / 1000) + 86400 * 5),
+      revealDeadline: BigInt(Math.floor(Date.now() / 1000) + 86400 * 7),
+      requiredDeposit: BigInt(10_000_000), // 10 USDC
       sellerRevealed: false,
       allowTrialsDuring: true,
       trialFee: BigInt(50_000_000), // $50 per trial
       maxTrialsPerBidder: BigInt(3),
       phase: NashPhase.Open,
+      highestBidder:
+        "0x0000000000000000000000000000000000000000" as `0x${string}`,
+      highestBid: BigInt(0),
+      sellerBond: BigInt(50_000_000), // 50 USDC
     },
   },
   {
@@ -256,13 +261,18 @@ const NASH_INVENTIONS: NashInvention[] = [
       sellerBidHash:
         "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890" as `0x${string}`,
       sellerMinRevealed: BigInt(0),
-      bidDeadline: BigInt(Math.floor(Date.now() / 1000) + 86400 * 3), // 3 days from now
-      revealDeadline: BigInt(Math.floor(Date.now() / 1000) + 86400 * 5), // 5 days from now
+      bidDeadline: BigInt(Math.floor(Date.now() / 1000) + 86400 * 3),
+      revealDeadline: BigInt(Math.floor(Date.now() / 1000) + 86400 * 5),
+      requiredDeposit: BigInt(0), // No deposit required
       sellerRevealed: false,
       allowTrialsDuring: true,
       trialFee: BigInt(25_000_000), // $25 per trial
       maxTrialsPerBidder: BigInt(5),
       phase: NashPhase.Open,
+      highestBidder:
+        "0x0000000000000000000000000000000000000000" as `0x${string}`,
+      highestBid: BigInt(0),
+      sellerBond: BigInt(50_000_000), // 50 USDC
     },
   },
   {
@@ -294,13 +304,18 @@ const NASH_INVENTIONS: NashInvention[] = [
       sellerBidHash:
         "0xfedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321" as `0x${string}`,
       sellerMinRevealed: BigInt(0),
-      bidDeadline: BigInt(Math.floor(Date.now() / 1000) + 86400 * 10), // 10 days from now
-      revealDeadline: BigInt(Math.floor(Date.now() / 1000) + 86400 * 14), // 14 days from now
+      bidDeadline: BigInt(Math.floor(Date.now() / 1000) + 86400 * 10),
+      revealDeadline: BigInt(Math.floor(Date.now() / 1000) + 86400 * 14),
+      requiredDeposit: BigInt(100_000_000), // 100 USDC deposit
       sellerRevealed: false,
-      allowTrialsDuring: false, // No trials - too sensitive
+      allowTrialsDuring: false,
       trialFee: BigInt(0),
       maxTrialsPerBidder: BigInt(0),
       phase: NashPhase.Open,
+      highestBidder:
+        "0x0000000000000000000000000000000000000000" as `0x${string}`,
+      highestBid: BigInt(0),
+      sellerBond: BigInt(250_000_000), // 250 USDC
     },
   },
 ];
