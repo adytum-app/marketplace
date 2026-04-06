@@ -17,6 +17,7 @@ import {
   Play,
   TrendingUp,
   AlertCircle,
+  ShieldAlert,
 } from "lucide-react";
 import { getMockInvention } from "@/lib/mockData";
 import { CONTRACTS, formatUSDC } from "@/config/wagmi";
@@ -337,6 +338,17 @@ function NashExplainer() {
           invention code.
         </p>
       </div>
+      <div className="flex items-start gap-3">
+        <div className="w-6 h-6 rounded-full bg-adytum-seal/20 flex items-center justify-center shrink-0 mt-0.5">
+          <span className="text-xs font-bold text-adytum-seal-light">4</span>
+        </div>
+        <p>
+          <strong className="text-white">Anti-griefing escrows</strong> — The
+          seller bonds USDC to guarantee they reveal their minimum price. Buyers
+          may need to escrow a deposit that is slashed if they fail to reveal
+          their bid.
+        </p>
+      </div>
     </div>
   );
 }
@@ -405,7 +417,7 @@ function PayPerUseSidebar({
           <div>
             <span className="text-adytum-smoke">Monthly:</span>{" "}
             <span className="text-white">
-              {config.maxCallsPerMonth.toString()}
+              {config.maxCallsPer30Days.toString()}
             </span>
           </div>
         </div>
@@ -539,6 +551,30 @@ function NashSidebar({
           </span>
         </div>
 
+        {config.requiredDeposit > BigInt(0) && (
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-adytum-smoke flex items-center gap-1">
+              <ShieldAlert className="h-3.5 w-3.5" />
+              Required Deposit
+            </span>
+            <span className="text-sm text-white font-medium">
+              {formatUSDC(config.requiredDeposit)} USDC
+            </span>
+          </div>
+        )}
+
+        {config.sellerBond > BigInt(0) && (
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-adytum-smoke flex items-center gap-1">
+              <Shield className="h-3.5 w-3.5 text-green-400" />
+              Seller Bonded
+            </span>
+            <span className="text-sm text-green-400 font-medium">
+              {formatUSDC(config.sellerBond)} USDC
+            </span>
+          </div>
+        )}
+
         {config.allowTrialsDuring && (
           <div className="flex items-center justify-between">
             <span className="text-sm text-adytum-smoke">Trial fee</span>
@@ -548,12 +584,14 @@ function NashSidebar({
           </div>
         )}
 
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-adytum-smoke">Max trials</span>
-          <span className="text-sm text-white">
-            {config.maxTrialsPerBidder.toString()} per bidder
-          </span>
-        </div>
+        {config.allowTrialsDuring && (
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-adytum-smoke">Max trials</span>
+            <span className="text-sm text-white">
+              {config.maxTrialsPerBidder.toString()} per bidder
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Trials allowed notice */}
