@@ -84,7 +84,7 @@ export interface Invention {
 export interface PayPerUseConfig {
   pricePerCall: bigint;
   maxCallsPerDay: bigint;
-  maxCallsPerMonth: bigint;
+  maxCallsPer30Days: bigint;
   cooldownSeconds: bigint;
   tier1Threshold: bigint;
   tier1Multiplier: bigint;
@@ -101,28 +101,35 @@ export interface NashConfig {
   sellerMinRevealed: bigint;
   bidDeadline: bigint;
   revealDeadline: bigint;
+  requiredDeposit: bigint;
   sellerRevealed: boolean;
   allowTrialsDuring: boolean;
   trialFee: bigint;
   maxTrialsPerBidder: bigint;
   phase: NashPhase;
+  highestBidder: `0x${string}`;
+  highestBid: bigint;
+  sellerBond: bigint;
 }
 
 export interface NashBid {
   bidHash: `0x${string}`;
   revealedAmount: bigint;
+  depositAmount: bigint;
+  buyerPubKey: `0x${string}`;
   submitted: boolean;
   revealed: boolean;
+  depositForfeited: boolean;
   trialCount: bigint;
 }
 
 export interface UsageTracker {
   totalCalls: bigint;
   callsToday: bigint;
-  callsThisMonth: bigint;
+  callsThis30Days: bigint;
   lastCallTimestamp: bigint;
   lastDayReset: bigint;
-  lastMonthReset: bigint;
+  last30DayReset: bigint;
   flaggedForExtraction: boolean;
 }
 
@@ -213,7 +220,7 @@ export interface ListPayPerUseForm {
   // Pay-per-use config
   pricePerCall: string; // In USDC
   maxCallsPerDay: number;
-  maxCallsPerMonth: number;
+  maxCallsPer30Days: number;
   cooldownSeconds: number;
 }
 
@@ -233,10 +240,13 @@ export interface ListNashForm {
   allowTrialsDuring: boolean;
   trialFee: string; // In USDC
   maxTrialsPerBidder: number;
+  sellerBond: string; // In USDC
+  requiredDeposit: string; // In USDC
 }
 
 export interface SubmitNashBidForm {
   maxWillingToPay: string; // In USDC
+  buyerPubKey: `0x${string}`; // Buyer's public key (X25519/secp256k1) for secure key delivery
 }
 
 export interface ExecutionInput {
@@ -265,7 +275,8 @@ export interface ExecutionResponse {
 export interface KeyReleaseResponse {
   inventionId: string;
   buyer: string;
-  decryptionKey: string;
+  encryptedKey: string;
+  attestation: string;
   released: boolean;
 }
 
