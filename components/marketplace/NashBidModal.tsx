@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   useAccount,
   useWriteContract,
@@ -15,13 +15,19 @@ import {
   Lock,
   Eye,
   Key,
+  ShieldAlert,
 } from "lucide-react";
 import { NashInvention, NashPhase, NashBid } from "@/types";
 import { LiveTimeRemaining } from "@/components/ui/LiveTimeRemaining";
 import { useBlockTimeOffset } from "@/hooks/useBlockTimeOffset";
-import { CONTRACTS, parseUSDC } from "@/config/wagmi";
-import { ADYTUM_ABI } from "@/config/abi";
-import { generateNashBidHash, generateSalt, waitForKeyRelease } from "@/lib/api";
+import { CONTRACTS, parseUSDC, formatUSDC } from "@/config/wagmi";
+import { ADYTUM_ABI, ERC20_ABI } from "@/config/abi";
+import {
+  generateNashBidHash,
+  generateSalt,
+  waitForKeyRelease,
+} from "@/lib/api";
+import { generateBuyerKeyPair } from "@/lib/crypto";
 
 interface NashBidModalProps {
   invention: NashInvention;
@@ -33,6 +39,7 @@ interface NashBidModalProps {
 
 type Step =
   | "bid"
+  | "approving"
   | "submitting"
   | "bid_success"
   | "reveal"
@@ -72,8 +79,13 @@ export function NashBidModal({
   const [error, setError] = useState<string | null>(null);
 
   // Contract writes
+  const { writeContract: approve, data: approveTxHash } = useWriteContract();
   const { writeContract: submitBid, data: submitTxHash } = useWriteContract();
   const { writeContract: revealBid, data: revealTxHash } = useWriteContract();
+
+  const { isSuccess: approveConfirmed } = useWaitForTransactionReceipt({
+    hash: approveTxHash,
+  });
 
   const { isSuccess: submitConfirmed } = useWaitForTransactionReceipt({
     hash: submitTxHash,
@@ -83,7 +95,39 @@ export function NashBidModal({
     hash: revealTxHash,
   });
 
-  // Handle submit confirmation - FIXED DEPENDENCIES
+  const doSubmitBid = useCallback(async () => {
+    try {
+      setStep("submitting");
+      setError(null);
+
+      const amount = parseUSDC(bidAmount);
+      const newSalt = generateSalt();
+      const bidHash = generateNashBidHash(amount, newSalt);
+
+      // Generate the X25519/secp256k1 keys for secure key delivery
+      const keypair = await generateBuyerKeyPair();
+
+      setSalt(newSalt);
+
+      // Store the private key so the frontend can decrypt the TEE response later
+      localStorage.setItem(
+        `nash_priv_key_${invention.id}_${address}`,
+        keypair.privateKey,
+      );
+
+      submitBid({
+        address: CONTRACTS.ADYTUM_MARKETPLACE,
+        abi: ADYTUM_ABI,
+        functionName: "submitNashBid",
+        args: [invention.id, bidHash, keypair.publicKey],
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to submit bid");
+      setStep("error");
+    }
+  }, [bidAmount, address, invention.id, submitBid]);
+
+  // Handle submit confirmation
   useEffect(() => {
     if (submitConfirmed && step === "submitting") {
       // Store salt in localStorage for reveal phase
@@ -98,33 +142,37 @@ export function NashBidModal({
     }
   }, [submitConfirmed, step, salt, bidAmount, invention.id, address]);
 
-  // Handle reveal confirmation - FIXED DEPENDENCIES
+  // Handle approval routing
+  useEffect(() => {
+    if (approveConfirmed && step === "approving") {
+      doSubmitBid();
+    }
+  }, [approveConfirmed, step, doSubmitBid]);
+
+  // Handle reveal confirmation
   useEffect(() => {
     if (revealConfirmed && step === "revealing") {
       setStep("reveal_success");
     }
   }, [revealConfirmed, step]);
 
-  const handleSubmitBid = async () => {
-    try {
-      setStep("submitting");
-      setError(null);
-
-      const amount = parseUSDC(bidAmount);
-      const newSalt = generateSalt();
-      const bidHash = generateNashBidHash(amount, newSalt);
-
-      setSalt(newSalt);
-
-      submitBid({
-        address: CONTRACTS.ADYTUM_MARKETPLACE,
-        abi: ADYTUM_ABI,
-        functionName: "submitNashBid",
-        args: [invention.id, bidHash],
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to submit bid");
-      setStep("error");
+  const handleSubmitSequence = async () => {
+    if (config.requiredDeposit > BigInt(0)) {
+      try {
+        setStep("approving");
+        setError(null);
+        approve({
+          address: CONTRACTS.USDC,
+          abi: ERC20_ABI,
+          functionName: "approve",
+          args: [CONTRACTS.ADYTUM_MARKETPLACE, config.requiredDeposit],
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Approval failed");
+        setStep("error");
+      }
+    } else {
+      doSubmitBid();
     }
   };
 
@@ -167,7 +215,12 @@ export function NashBidModal({
       setError(null);
 
       const result = await waitForKeyRelease(invention.id, address!);
-      setDecryptionKey(result.decryption_key);
+
+      // In production, you would fetch `nash_priv_key` from local storage
+      // and use it to decrypt `result.encrypted_key` locally here.
+      // For this implementation, we simulate it directly passing the encrypted key.
+
+      setDecryptionKey(result.encrypted_key);
       setStep("key_released");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to claim key");
@@ -226,7 +279,14 @@ export function NashBidModal({
               bidAmount={bidAmount}
               setBidAmount={setBidAmount}
               timeOffset={timeOffset}
-              onSubmit={handleSubmitBid}
+              onSubmit={handleSubmitSequence}
+            />
+          )}
+
+          {step === "approving" && (
+            <LoadingStep
+              title="Approving Required Deposit"
+              description={`Approving ${formatUSDC(config.requiredDeposit)} USDC to secure your bid...`}
             />
           )}
 
@@ -269,7 +329,7 @@ export function NashBidModal({
           {step === "claiming" && (
             <LoadingStep
               title="Claiming Decryption Key"
-              description="Requesting key release from the TEE..."
+              description="Requesting encrypted key release from the TEE..."
             />
           )}
 
@@ -356,12 +416,32 @@ function BidStep({
         </p>
       </div>
 
+      {/* Required Deposit Warning */}
+      {config.requiredDeposit > BigInt(0) && (
+        <div className="flex items-start gap-2 p-3 bg-red-500/10 rounded-lg border border-red-500/20">
+          <ShieldAlert className="h-4 w-4 text-red-400 shrink-0 mt-0.5" />
+          <div className="text-xs text-red-200">
+            <p className="font-semibold mb-1">
+              Required Deposit: {formatUSDC(config.requiredDeposit)} USDC
+            </p>
+            <p>
+              To prevent griefing, this deposit will be held in escrow.{" "}
+              <strong>
+                If you submit a bid but fail to reveal it during the reveal
+                phase, you will forfeit this deposit.
+              </strong>{" "}
+              It will be fully refunded upon a successful reveal.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Sealed bid notice */}
-      <div className="flex items-start gap-2 p-3 bg-adytum-amethyst-500/10 rounded-lg">
+      <div className="flex items-start gap-2 p-3 bg-adytum-amethyst-500/10 rounded-lg border border-adytum-amethyst-500/20">
         <Lock className="h-4 w-4 text-adytum-amethyst-400 shrink-0 mt-0.5" />
         <p className="text-xs text-adytum-amethyst-200">
-          Your bid is cryptographically sealed. No one (including the seller)
-          can see your amount until the reveal phase.
+          Your bid is cryptographically sealed and your public key attached. No
+          one (including the seller) can see your amount until the reveal phase.
         </p>
       </div>
 
@@ -372,7 +452,9 @@ function BidStep({
         className="btn-primary w-full"
       >
         <Lock className="h-4 w-4 mr-2" />
-        Submit Sealed Bid
+        {config.requiredDeposit > BigInt(0)
+          ? `Approve Deposit & Submit Bid`
+          : "Submit Sealed Bid"}
       </button>
     </div>
   );
@@ -412,7 +494,11 @@ function BidSuccessStep({
         <AlertCircle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
         <p className="text-xs text-amber-200">
           <strong>Important:</strong> You must return during the reveal phase to
-          reveal your bid. Unrevealed bids are disqualified.
+          reveal your bid. Unrevealed bids are disqualified{" "}
+          {invention.config.requiredDeposit > BigInt(0)
+            ? "and your deposit will be forfeited"
+            : ""}
+          .
         </p>
       </div>
 
@@ -492,8 +578,8 @@ function ClaimKeyStep({ onClaim }: { onClaim: () => void }) {
         You Won!
       </h3>
       <p className="text-sm text-adytum-smoke mb-6">
-        Congratulations! You can now claim the decryption key to access the full
-        invention code.
+        Congratulations! You can now claim the encrypted decryption key to
+        access the full invention code.
       </p>
       <button onClick={onClaim} className="btn-primary w-full">
         <Key className="h-4 w-4 mr-2" />
@@ -526,13 +612,13 @@ function KeyReleasedStep({
           Key Released!
         </h3>
         <p className="text-sm text-adytum-smoke">
-          Save this key securely. You&apos;ll need it to decrypt the invention
-          code.
+          Save this encrypted key securely. You&apos;ll need it and your private
+          key to decrypt the invention code.
         </p>
       </div>
 
       <div className="p-3 bg-adytum-void-100 rounded-lg">
-        <label className="label">Decryption Key</label>
+        <label className="label">Encrypted Decryption Key</label>
         <div className="flex gap-2">
           <code className="flex-1 p-2 bg-adytum-void-200 rounded text-xs text-white font-mono break-all">
             {decryptionKey}
@@ -547,7 +633,8 @@ function KeyReleasedStep({
         <AlertCircle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
         <p className="text-xs text-amber-200">
           <strong>Save this key!</strong> It will not be shown again. You can
-          download the encrypted invention from IPFS and decrypt it locally.
+          download the encrypted invention from IPFS and decrypt it locally
+          using your browser&apos;s stored private key.
         </p>
       </div>
 
