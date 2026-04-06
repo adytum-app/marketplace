@@ -1,4 +1,4 @@
-// lib/crypto.ts
+import { toHex } from "viem";
 
 /**
  * Encrypts the raw Python code for the TEE.
@@ -39,4 +39,23 @@ export async function encryptCodeForTEE(rawCode: string): Promise<Blob> {
   );
 
   return new Blob([payload], { type: "application/octet-stream" });
+}
+
+/**
+ * MOCK: Generates a dummy asymmetric keypair for the buyer.
+ * The public key is submitted with the Nash bid. The TEE uses it to securely
+ * encrypt the decryption key so only the winning buyer can access the invention.
+ * (In production, use secp256k1 or X25519)
+ */
+export async function generateBuyerKeyPair(): Promise<{
+  publicKey: `0x${string}`;
+  privateKey: string;
+}> {
+  // Mocking a 32-byte public key string for compatibility
+  const mockPubKeyArray = new Uint8Array(32);
+  window.crypto.getRandomValues(mockPubKeyArray);
+  return {
+    publicKey: toHex(mockPubKeyArray),
+    privateKey: "MOCK_PRIVATE_KEY",
+  };
 }
