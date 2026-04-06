@@ -27,7 +27,8 @@ export interface ExecutionResult {
 export interface KeyReleaseResult {
   invention_id: string;
   buyer: string;
-  decryption_key: string;
+  encrypted_key: string;
+  attestation: string;
   released: boolean;
 }
 
@@ -221,7 +222,6 @@ export async function encryptAndUploadInvention(
  * Generate input hash from data
  */
 export function hashInput(data: Record<string, unknown>): `0x${string}` {
-  // Convert JSON to a hex string, then keccak256 hash it
   const jsonString = JSON.stringify(data);
   const hexData = stringToHex(jsonString);
   return keccak256(hexData);
@@ -229,16 +229,12 @@ export function hashInput(data: Record<string, unknown>): `0x${string}` {
 
 /**
  * Generate Nash bid hash
- * Exactly matches Solidity's: keccak256(abi.encodePacked(amount, salt))
  */
 export function generateNashBidHash(
   amount: bigint,
   salt: `0x${string}`,
 ): `0x${string}` {
-  // encodePacked tightly packs the uint256 (amount) and bytes32 (salt)
-  // exactly how Solidity does it natively.
   const packed = encodePacked(["uint256", "bytes32"], [amount, salt]);
-
   return keccak256(packed);
 }
 
