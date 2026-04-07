@@ -1,15 +1,15 @@
 "use client";
 
-import { parseUSDC } from "@/config/wagmi";
+import { parseUSDC, formatUSDC } from "@/config/wagmi";
 import { generateSalt, generateNashBidHash } from "@/lib/api";
 import { encryptCodeForTEE } from "@/lib/crypto";
 import { useState } from "react";
-import { useAccount, useWriteContract, usePublicClient } from "wagmi";
-import { decodeEventLog } from "viem";
+import { useAccount, useWriteContract, usePublicClient, useReadContract } from "wagmi";
+import { decodeEventLog, keccak256, toHex } from "viem";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import Link from "next/link";
 import { CONTRACTS } from "@/config/wagmi";
-import { ADYTUM_ABI } from "@/config/abi";
+import { ADYTUM_ABI, ERC20_ABI } from "@/config/abi";
 import {
   Upload,
   Plus,
@@ -21,6 +21,7 @@ import {
   Zap,
   Gavel,
   Info,
+  ShieldAlert,
 } from "lucide-react";
 import {
   InventionCategory,
@@ -35,6 +36,7 @@ import {
 type ListingStep =
   | "model"
   | "form"
+  | "approving"
   | "uploading"
   | "signing"
   | "confirming"
@@ -43,24 +45,42 @@ type ListingStep =
 
 type NashPreparedArgs = {
   sellerMinHash: `0x${string}`;
-  bidDeadline: number;
-  revealDeadline: number;
+  bidDeadline: bigint;
+  revealDeadline: bigint;
   allowTrialsDuring: boolean;
   trialFee: bigint;
   maxTrialsPerBidder: bigint;
+  sellerBond: bigint;
+  requiredDeposit: bigint;
 };
 
 type PayPerUsePreparedArgs = {
   pricePerCall: bigint;
-  maxCallsPerDay: number;
-  maxCallsPerMonth: number;
-  cooldownSeconds: number;
+  maxCallsPerDay: bigint;
+  maxCallsPer30Days: bigint;
+  cooldownSeconds: bigint;
 };
 
 export default function ListInventionPage() {
   const { address, isConnected } = useAccount();
   const { writeContractAsync } = useWriteContract();
   const publicClient = usePublicClient();
+
+  // Fetch required network minimums
+  const { data: minBondData } = useReadContract({
+    address: CONTRACTS.ADYTUM_MARKETPLACE,
+    abi: ADYTUM_ABI,
+    functionName: "minSellerBond",
+  });
+  
+  const { data: listingFeeData } = useReadContract({
+    address: CONTRACTS.ADYTUM_MARKETPLACE,
+    abi: ADYTUM_ABI,
+    functionName: "payPerUseListingFee",
+  });
+
+  const minSellerBond = (minBondData as bigint) ?? BigInt(50_000_000); // Default 50 USDC
+  const payPerUseListingFee = (listingFeeData as bigint) ?? BigInt(5_000_000); // Default 5 USDC
 
   const [step, setStep] = useState<ListingStep>("model");
   const [selectedModel, setSelectedModel] = useState<MonetizationModel | null>(
@@ -82,7 +102,7 @@ export default function ListInventionPage() {
   const [payPerUseConfig, setPayPerUseConfig] = useState({
     pricePerCall: "",
     maxCallsPerDay: 50,
-    maxCallsPerMonth: 500,
+    maxCallsPer30Days: 500,
     cooldownSeconds: 0,
   });
 
@@ -94,6 +114,8 @@ export default function ListInventionPage() {
     allowTrialsDuring: true,
     trialFee: "",
     maxTrialsPerBidder: 5,
+    sellerBond: "50",
+    requiredDeposit: "10",
   });
 
   const [newTag, setNewTag] = useState("");
@@ -144,21 +166,18 @@ export default function ListInventionPage() {
     }
 
     try {
-      setStep("uploading");
-
       let preparedArgs: NashPreparedArgs | PayPerUsePreparedArgs | null = null;
       let nashSaltToSave: `0x${string}` | null = null;
       let nashPriceToSave: string | null = null;
+      let requiredUSDC = BigInt(0);
 
       // ==========================================
       // 1. PREPARE SMART CONTRACT ARGUMENTS
       // ==========================================
       if (selectedModel === MonetizationModel.NashNegotiation) {
         const currentTimestamp = Math.floor(Date.now() / 1000);
-        const bidDeadline =
-          currentTimestamp + nashConfig.bidDurationDays * 86400;
-        const revealDeadline =
-          bidDeadline + nashConfig.revealDurationDays * 86400;
+        const bidDeadline = BigInt(currentTimestamp + nashConfig.bidDurationDays * 86400);
+        const revealDeadline = BigInt(currentTimestamp + (nashConfig.bidDurationDays + nashConfig.revealDurationDays) * 86400);
 
         const salt = generateSalt();
         const minPriceBigInt = parseUSDC(nashConfig.minAcceptable);
@@ -166,6 +185,13 @@ export default function ListInventionPage() {
 
         nashSaltToSave = salt;
         nashPriceToSave = nashConfig.minAcceptable;
+        
+        const sellerBondBigInt = parseUSDC(nashConfig.sellerBond);
+        if (sellerBondBigInt < minSellerBond) {
+          throw new Error(`Minimum seller bond is ${formatUSDC(minSellerBond)} USDC`);
+        }
+        
+        requiredUSDC = sellerBondBigInt;
 
         preparedArgs = {
           sellerMinHash: sellerBidHash,
@@ -176,13 +202,16 @@ export default function ListInventionPage() {
             ? parseUSDC(nashConfig.trialFee)
             : BigInt(0),
           maxTrialsPerBidder: BigInt(nashConfig.maxTrialsPerBidder),
+          sellerBond: sellerBondBigInt,
+          requiredDeposit: nashConfig.requiredDeposit ? parseUSDC(nashConfig.requiredDeposit) : BigInt(0),
         };
       } else if (selectedModel === MonetizationModel.PayPerUse) {
+        requiredUSDC = payPerUseListingFee;
         preparedArgs = {
           pricePerCall: parseUSDC(payPerUseConfig.pricePerCall),
-          maxCallsPerDay: payPerUseConfig.maxCallsPerDay,
-          maxCallsPerMonth: payPerUseConfig.maxCallsPerMonth,
-          cooldownSeconds: payPerUseConfig.cooldownSeconds,
+          maxCallsPerDay: BigInt(payPerUseConfig.maxCallsPerDay),
+          maxCallsPer30Days: BigInt(payPerUseConfig.maxCallsPer30Days),
+          cooldownSeconds: BigInt(payPerUseConfig.cooldownSeconds),
         };
       }
 
@@ -191,8 +220,26 @@ export default function ListInventionPage() {
       }
 
       // ==========================================
-      // 2. ENCRYPT & UPLOAD TO IPFS
+      // 2. APPROVE USDC FOR BOND / FEE
       // ==========================================
+      if (requiredUSDC > BigInt(0)) {
+        setStep("approving");
+        const approveTx = await (writeContractAsync as unknown as (
+          config: unknown,
+        ) => Promise<`0x${string}`>)({
+          address: CONTRACTS.USDC,
+          abi: ERC20_ABI,
+          functionName: "approve",
+          args: [CONTRACTS.ADYTUM_MARKETPLACE, requiredUSDC],
+        });
+        
+        await publicClient.waitForTransactionReceipt({ hash: approveTx });
+      }
+
+      // ==========================================
+      // 3. ENCRYPT & UPLOAD TO IPFS
+      // ==========================================
+      setStep("uploading");
       const encryptedCodeBlob = await encryptCodeForTEE(inventionCode);
 
       const codeFormData = new FormData();
@@ -233,23 +280,61 @@ export default function ListInventionPage() {
       const finalTokenUri = `ipfs://${metadataData.cid}`;
 
       // ==========================================
-      // 3. CALL SMART CONTRACT (WAGMI)
+      // 4. CALL SMART CONTRACT (WAGMI)
       // ==========================================
       setStep("signing");
 
-      const functionToCall =
-        selectedModel === MonetizationModel.NashNegotiation
-          ? "listNashNegotiation"
-          : "listPayPerUse";
+      // Calculate hashes needed for the smart contract struct parameters
+      const codeBuffer = await encryptedCodeBlob.arrayBuffer();
+      const encryptedCodeHash = keccak256(toHex(new Uint8Array(codeBuffer)));
+      // Mocking encryption key hash for frontend testing - in prod this comes from KMS
+      const encryptionKeyHash = keccak256(toHex(new Uint8Array(32))); 
 
-      const txHash = await (writeContractAsync as unknown as (
-        config: unknown,
-      ) => Promise<`0x${string}`>)({
-        address: CONTRACTS.ADYTUM_MARKETPLACE,
-        abi: ADYTUM_ABI,
-        functionName: functionToCall,
-        args: [finalTokenUri, preparedArgs],
-      });
+      let txHash: `0x${string}`;
+
+      if (selectedModel === MonetizationModel.NashNegotiation) {
+        const args = preparedArgs as NashPreparedArgs;
+        txHash = await (writeContractAsync as unknown as (
+          config: unknown,
+        ) => Promise<`0x${string}`>)({
+          address: CONTRACTS.ADYTUM_MARKETPLACE,
+          abi: ADYTUM_ABI,
+          functionName: "listNashNegotiation",
+          args: [
+            finalTokenUri,
+            encryptedCodeHash,
+            encryptionKeyHash,
+            formData.category,
+            args.sellerMinHash,
+            args.bidDeadline,
+            args.revealDeadline,
+            args.allowTrialsDuring,
+            args.trialFee,
+            args.maxTrialsPerBidder,
+            args.sellerBond,
+            args.requiredDeposit,
+          ],
+        });
+      } else {
+        const args = preparedArgs as PayPerUsePreparedArgs;
+        txHash = await (writeContractAsync as unknown as (
+          config: unknown,
+        ) => Promise<`0x${string}`>)({
+          address: CONTRACTS.ADYTUM_MARKETPLACE,
+          abi: ADYTUM_ABI,
+          functionName: "listPayPerUse",
+          args: [
+            finalTokenUri,
+            encryptedCodeHash,
+            encryptionKeyHash,
+            formData.category,
+            args.pricePerCall,
+            args.maxCallsPerDay,
+            args.maxCallsPer30Days,
+            args.cooldownSeconds,
+          ],
+        });
+      }
 
       setStep("confirming");
 
@@ -259,7 +344,7 @@ export default function ListInventionPage() {
       });
 
       // ==========================================
-      // 4. EXTRACT ID & SAVE SENSITIVE DATA
+      // 5. EXTRACT ID & SAVE SENSITIVE DATA
       // ==========================================
       let newlyMintedInventionId = "";
 
@@ -273,8 +358,10 @@ export default function ListInventionPage() {
           });
 
           if (decoded.eventName === "InventionListed") {
-            const eventArgs = decoded.args as { inventionId?: bigint };
-            if (eventArgs.inventionId) {
+            const eventArgs = decoded.args as { id?: string; inventionId?: string };
+            if (eventArgs.id) {
+              newlyMintedInventionId = eventArgs.id.toString();
+            } else if (eventArgs.inventionId) {
               newlyMintedInventionId = eventArgs.inventionId.toString();
             }
           }
@@ -329,7 +416,7 @@ export default function ListInventionPage() {
     setPayPerUseConfig({
       pricePerCall: "",
       maxCallsPerDay: 50,
-      maxCallsPerMonth: 500,
+      maxCallsPer30Days: 500,
       cooldownSeconds: 0,
     });
     setNashConfig({
@@ -339,6 +426,8 @@ export default function ListInventionPage() {
       allowTrialsDuring: true,
       trialFee: "",
       maxTrialsPerBidder: 5,
+      sellerBond: "50",
+      requiredDeposit: "10",
     });
     setInventionCode("");
     setError(null);
@@ -359,6 +448,23 @@ export default function ListInventionPage() {
             Connect your wallet to list an invention on the Adytum marketplace.
           </p>
           <ConnectButton />
+        </div>
+      </div>
+    );
+  }
+
+  // Approving Phase
+  if (step === "approving") {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="h-16 w-16 text-adytum-vault mx-auto mb-6 animate-spin" />
+          <h2 className="font-display text-2xl font-bold text-white mb-2">
+            Approving USDC
+          </h2>
+          <p className="text-adytum-smoke">
+            Please approve the required {selectedModel === MonetizationModel.NashNegotiation ? "Seller Bond" : "Listing Fee"} in your wallet.
+          </p>
         </div>
       </div>
     );
@@ -646,9 +752,14 @@ export default function ListInventionPage() {
             <PayPerUseConfigForm
               config={payPerUseConfig}
               setConfig={setPayPerUseConfig}
+              listingFee={payPerUseListingFee}
             />
           ) : (
-            <NashConfigForm config={nashConfig} setConfig={setNashConfig} />
+            <NashConfigForm 
+              config={nashConfig} 
+              setConfig={setNashConfig} 
+              minBond={minSellerBond}
+            />
           )}
 
           {/* Tags */}
@@ -865,21 +976,28 @@ export default function ListInventionPage() {
 function PayPerUseConfigForm({
   config,
   setConfig,
+  listingFee,
 }: {
   config: {
     pricePerCall: string;
     maxCallsPerDay: number;
-    maxCallsPerMonth: number;
+    maxCallsPer30Days: number;
     cooldownSeconds: number;
   };
   setConfig: React.Dispatch<React.SetStateAction<typeof config>>;
+  listingFee: bigint;
 }) {
   return (
     <div className="card p-6 space-y-4">
-      <h2 className="font-display text-xl font-semibold text-white flex items-center gap-2">
-        <Zap className="h-5 w-5 text-adytum-vault" />
-        Pay-Per-Use Configuration
-      </h2>
+      <div className="flex items-center justify-between">
+        <h2 className="font-display text-xl font-semibold text-white flex items-center gap-2">
+          <Zap className="h-5 w-5 text-adytum-vault" />
+          Pay-Per-Use Configuration
+        </h2>
+        <span className="badge badge-vault">
+          Listing Fee: {formatUSDC(listingFee)} USDC
+        </span>
+      </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
@@ -931,14 +1049,14 @@ function PayPerUseConfigForm({
         </div>
 
         <div>
-          <label className="label">Max Calls per Month</label>
+          <label className="label">Max Calls per 30 Days</label>
           <input
             type="number"
             min="1"
             max="10000"
-            value={config.maxCallsPerMonth}
+            value={config.maxCallsPer30Days}
             onChange={(e) =>
-              setConfig({ ...config, maxCallsPerMonth: Number(e.target.value) })
+              setConfig({ ...config, maxCallsPer30Days: Number(e.target.value) })
             }
             className="input"
           />
@@ -959,6 +1077,7 @@ function PayPerUseConfigForm({
 function NashConfigForm({
   config,
   setConfig,
+  minBond,
 }: {
   config: {
     minAcceptable: string;
@@ -967,9 +1086,14 @@ function NashConfigForm({
     allowTrialsDuring: boolean;
     trialFee: string;
     maxTrialsPerBidder: number;
+    sellerBond: string;
+    requiredDeposit: string;
   };
   setConfig: React.Dispatch<React.SetStateAction<typeof config>>;
+  minBond: bigint;
 }) {
+  const isBondTooLow = config.sellerBond ? parseUSDC(config.sellerBond) < minBond : true;
+
   return (
     <div className="card p-6 space-y-4">
       <h2 className="font-display text-xl font-semibold text-white flex items-center gap-2">
@@ -995,6 +1119,48 @@ function NashConfigForm({
           This will be sealed and only revealed during settlement. If no buyer
           meets this minimum, the deal fails.
         </p>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label className="label">Seller Escrow Bond (USDC)</label>
+          <input
+            type="number"
+            step="0.01"
+            min={formatUSDC(minBond)}
+            required
+            value={config.sellerBond}
+            onChange={(e) =>
+              setConfig({ ...config, sellerBond: e.target.value })
+            }
+            placeholder={formatUSDC(minBond)}
+            className={`input ${isBondTooLow ? "border-red-500 focus:border-red-500" : ""}`}
+          />
+          <p className={`mt-1 text-xs ${isBondTooLow ? "text-red-400" : "text-adytum-smoke"}`}>
+            Minimum required bond is {formatUSDC(minBond)} USDC. Forfeited if you fail to reveal.
+          </p>
+        </div>
+
+        <div>
+          <label className="label flex items-center gap-1">
+            Required Buyer Deposit (USDC)
+            <ShieldAlert className="h-3.5 w-3.5 text-adytum-smoke" />
+          </label>
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            value={config.requiredDeposit}
+            onChange={(e) =>
+              setConfig({ ...config, requiredDeposit: e.target.value })
+            }
+            placeholder="10.00"
+            className="input"
+          />
+          <p className="mt-1 text-xs text-adytum-smoke">
+            Amount buyers must escrow to prevent fake bids. Can be 0.
+          </p>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
