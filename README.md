@@ -12,11 +12,11 @@ A Next.js frontend for the Adytum Marketplace — enabling inventors to monetize
 
 ---
 
-## Theoretical Foundation: The NDAi Paper
+## Theoretical Foundation: The NDAI Agreements Paper
 
 This frontend implements the user-facing interface for concepts from:
 
-> **"NDAI"** by Matt Stephenson, Andrew Miller, Xyn Sun, Bhargav Annem, and Rohan Parikh  
+> **"NDAI Agreements"** by Matt Stephenson, Andrew Miller, Xyn Sun, Bhargav Annem, and Rohan Parikh  
 > arXiv:2502.07924v1 [econ.TH] — February 2025  
 > https://arxiv.org/abs/2502.07924
 
@@ -92,36 +92,36 @@ The solution: **Trusted Execution Environments (TEEs) combined with AI agents** 
 │              (Implementing NDAI User Interface)                     │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │                      Next.js App Router                      │   │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────────────┐ │   │
-│  │  │  page   │  │  list   │  │invention│  │      vault      │ │   │
-│  │  │ (browse)│  │ (create)│  │  [id]   │  │ (seller/buyer)  │ │   │
-│  │  └────┬────┘  └────┬────┘  └────┬────┘  └────────┬────────┘ │   │
-│  └───────┼────────────┼───────────┼─────────────────┼──────────┘   │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │                      Next.js App Router                     │    │
+│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────────────┐ │    │
+│  │  │  page   │  │  list   │  │invention│  │      vault      │ │    │
+│  │  │ (browse)│  │ (create)│  │  [id]   │  │ (seller/buyer)  │ │    │
+│  │  └────┬────┘  └────┬────┘  └────┬────┘  └────────┬────────┘ │    │
+│  └───────┼────────────┼───────────┼─────────────────┼──────────┘    │
 │          │            │           │                 │               │
-│  ┌───────┴────────────┴───────────┴─────────────────┴──────────┐   │
-│  │                     React Components                         │   │
-│  │  ┌────────────┐  ┌────────────┐  ┌────────────────────────┐ │   │
-│  │  │ Invention  │  │  Execute   │  │      NashBidModal      │ │   │
-│  │  │   Card     │  │   Modal    │  │  (sealed-bid + reveal) │ │   │
-│  │  └─────┬──────┘  └─────┬──────┘  └───────────┬────────────┘ │   │
-│  └────────┼───────────────┼─────────────────────┼──────────────┘   │
+│  ┌───────┴────────────┴───────────┴─────────────────┴──────────┐    │
+│  │                     React Components                        │    │
+│  │  ┌────────────┐  ┌────────────┐  ┌────────────────────────┐ │    │
+│  │  │ Invention  │  │  Execute   │  │      NashBidModal      │ │    │
+│  │  │   Card     │  │   Modal    │  │  (sealed-bid + reveal) │ │    │
+│  │  └─────┬──────┘  └─────┬──────┘  └───────────┬────────────┘ │    │
+│  └────────┼───────────────┼─────────────────────┼──────────────┘    │
 │           │               │                     │                   │
-│  ┌────────┴───────────────┴─────────────────────┴──────────────┐   │
-│  │                         Hooks & Libs                         │   │
-│  │  ┌──────────────────┐  ┌──────────────┐  ┌────────────────┐ │   │
-│  │  │useBlockTimeOffset│  │  lib/api.ts  │  │ lib/crypto.ts  │ │   │
-│  │  │  (deadline sync) │  │ (hash gen)   │  │ (keypair gen)  │ │   │
-│  │  └────────┬─────────┘  └──────┬───────┘  └───────┬────────┘ │   │
-│  └───────────┼───────────────────┼──────────────────┼───────────┘   │
-│              │                   │                  │                │
+│  ┌────────┴───────────────┴─────────────────────┴──────────────┐    │
+│  │                         Hooks & Libs                        │    │
+│  │  ┌──────────────────┐  ┌──────────────┐  ┌────────────────┐ │    │
+│  │  │useBlockTimeOffset│  │  lib/api.ts  │  │ lib/crypto.ts  │ │    │
+│  │  │  (deadline sync) │  │ (hash gen)   │  │ (keypair gen)  │ │    │
+│  │  └────────┬─────────┘  └──────┬───────┘  └───────┬────────┘ │    │
+│  └───────────┼───────────────────┼──────────────────┼──────────┘    │
+│              │                   │                  │               │
 │  ┌───────────┴───────────────────┴──────────────────┴───────────┐   │
-│  │                     wagmi / viem                              │   │
-│  │           (Contract reads, writes, event decoding)            │   │
-│  └──────────────────────────────┬────────────────────────────────┘   │
-│                                 │                                    │
-│                                 ▼                                    │
+│  │                     wagmi / viem                             │   │
+│  │           (Contract reads, writes, event decoding)           │   │
+│  └──────────────────────────────┬───────────────────────────────┘   │
+│                                 │                                   │
+│                                 ▼                                   │
 │  ┌──────────────────────────────────────────────────────────────┐   │
 │  │              AdytumMarketplace.sol (Base Sepolia)            │   │
 │  │    TEE_EXECUTION_ROLE │ TEE_SETTLEMENT_ROLE │ USDC (6 dec)   │   │
@@ -214,13 +214,13 @@ adytum-frontend/
 
 ## Key Components
 
-### Nash Bidding Flow (Implementing NDAi Sealed-Bid Mechanism)
+### Nash Bidding Flow (Implementing NDAI Sealed-Bid Mechanism)
 
 The frontend implements the paper's sealed-bid Nash bargaining through a multi-phase flow:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    NASH BIDDING LIFECYCLE                        │
+│                    NASH BIDDING LIFECYCLE                       │
 │           (Frontend implementation of NDAI §4.1)                │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
@@ -237,7 +237,7 @@ The frontend implements the paper's sealed-bid Nash bargaining through a multi-p
 │  ─────────────────                                              │
 │  • Seller calls revealSellerMin(id, minAcceptable, salt)        │
 │  • Buyers call revealNashBid(id, maxWillingToPay, salt)         │
-│  • Contract verifies hash matches commitment                     │
+│  • Contract verifies hash matches commitment                    │
 │  • Frontend retrieves stored salt/amount from localStorage      │
 │                                                                 │
 │  PHASE 2: SETTLED                                               │
@@ -270,7 +270,7 @@ This prevents UX issues where client clocks drift from chain time.
 ### Cryptographic Utilities
 
 ```typescript
-// lib/api.ts — Commitment scheme (NDAi §4.2)
+// lib/api.ts — Commitment scheme (NDAI §4.2)
 export function generateNashBidHash(
   amount: bigint,
   salt: `0x${string}`,
@@ -448,7 +448,7 @@ await writeContract({ address: MARKETPLACE, functionName: "submitNashBid", ... }
 
 ## References
 
-1. Stephenson, M., Miller, A., Sun, X., Annem, B., & Parikh, R. (2025). _NDAi_. arXiv:2502.07924v1 [econ.TH]. https://arxiv.org/abs/2502.07924
+1. Stephenson, M., Miller, A., Sun, X., Annem, B., & Parikh, R. (2025). _NDAI Agreements_. arXiv:2502.07924v1 [econ.TH]. https://arxiv.org/abs/2502.07924
 
 2. Arrow, K. J. (1962). Economic welfare and the allocation of resources for invention. _The Rate and Direction of Inventive Activity_.
 
@@ -468,6 +468,6 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 - **Live App**: [adytum.app](https://adytum.app)
 - **Smart Contract**: [GitHub](https://github.com/your-org/adytum-contracts)
-- **NDAI Paper**: [arXiv:2502.07924](https://arxiv.org/abs/2502.07924)
+- **NDAI Agreements Paper**: [arXiv:2502.07924](https://arxiv.org/abs/2502.07924)
 
 ---
