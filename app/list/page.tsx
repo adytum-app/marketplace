@@ -4,7 +4,13 @@ import { parseUSDC, formatUSDC } from "@/config/wagmi";
 import { generateSalt, generateNashBidHash } from "@/lib/api";
 import { encryptCodeForTEE } from "@/lib/crypto";
 import { useState } from "react";
-import { useAccount, useWriteContract, usePublicClient, useReadContract } from "wagmi";
+import {
+  useAccount,
+  useWriteContract,
+  usePublicClient,
+  useReadContract,
+  useSignMessage,
+} from "wagmi";
 import { decodeEventLog, keccak256, toHex } from "viem";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import Link from "next/link";
@@ -40,6 +46,7 @@ type ListingStep =
   | "uploading"
   | "signing"
   | "confirming"
+  | "signing_key"
   | "success"
   | "error";
 
@@ -65,6 +72,7 @@ export default function ListInventionPage() {
   const { address, isConnected } = useAccount();
   const { writeContractAsync } = useWriteContract();
   const publicClient = usePublicClient();
+  const { signMessageAsync } = useSignMessage();
 
   // Fetch required network minimums
   const { data: minBondData } = useReadContract({
@@ -72,7 +80,7 @@ export default function ListInventionPage() {
     abi: ADYTUM_ABI,
     functionName: "minSellerBond",
   });
-  
+
   const { data: listingFeeData } = useReadContract({
     address: CONTRACTS.ADYTUM_MARKETPLACE,
     abi: ADYTUM_ABI,
@@ -176,8 +184,14 @@ export default function ListInventionPage() {
       // ==========================================
       if (selectedModel === MonetizationModel.NashNegotiation) {
         const currentTimestamp = Math.floor(Date.now() / 1000);
-        const bidDeadline = BigInt(currentTimestamp + nashConfig.bidDurationDays * 86400);
-        const revealDeadline = BigInt(currentTimestamp + (nashConfig.bidDurationDays + nashConfig.revealDurationDays) * 86400);
+        const bidDeadline = BigInt(
+          currentTimestamp + nashConfig.bidDurationDays * 86400,
+        );
+        const revealDeadline = BigInt(
+          currentTimestamp +
+            (nashConfig.bidDurationDays + nashConfig.revealDurationDays) *
+              86400,
+        );
 
         const salt = generateSalt();
         const minPriceBigInt = parseUSDC(nashConfig.minAcceptable);
@@ -185,12 +199,14 @@ export default function ListInventionPage() {
 
         nashSaltToSave = salt;
         nashPriceToSave = nashConfig.minAcceptable;
-        
+
         const sellerBondBigInt = parseUSDC(nashConfig.sellerBond);
         if (sellerBondBigInt < minSellerBond) {
-          throw new Error(`Minimum seller bond is ${formatUSDC(minSellerBond)} USDC`);
+          throw new Error(
+            `Minimum seller bond is ${formatUSDC(minSellerBond)} USDC`,
+          );
         }
-        
+
         requiredUSDC = sellerBondBigInt;
 
         preparedArgs = {
@@ -203,7 +219,9 @@ export default function ListInventionPage() {
             : BigInt(0),
           maxTrialsPerBidder: BigInt(nashConfig.maxTrialsPerBidder),
           sellerBond: sellerBondBigInt,
-          requiredDeposit: nashConfig.requiredDeposit ? parseUSDC(nashConfig.requiredDeposit) : BigInt(0),
+          requiredDeposit: nashConfig.requiredDeposit
+            ? parseUSDC(nashConfig.requiredDeposit)
+            : BigInt(0),
         };
       } else if (selectedModel === MonetizationModel.PayPerUse) {
         requiredUSDC = payPerUseListingFee;
@@ -224,15 +242,17 @@ export default function ListInventionPage() {
       // ==========================================
       if (requiredUSDC > BigInt(0)) {
         setStep("approving");
-        const approveTx = await (writeContractAsync as unknown as (
-          config: unknown,
-        ) => Promise<`0x${string}`>)({
+        const approveTx = await (
+          writeContractAsync as unknown as (
+            config: unknown,
+          ) => Promise<`0x${string}`>
+        )({
           address: CONTRACTS.USDC,
           abi: ERC20_ABI,
           functionName: "approve",
           args: [CONTRACTS.ADYTUM_MARKETPLACE, requiredUSDC],
         });
-        
+
         await publicClient.waitForTransactionReceipt({ hash: approveTx });
       }
 
@@ -240,7 +260,10 @@ export default function ListInventionPage() {
       // 3. ENCRYPT & UPLOAD TO IPFS
       // ==========================================
       setStep("uploading");
-      const encryptedCodeBlob = await encryptCodeForTEE(inventionCode);
+
+      // Destructure both the blob and the raw decryption key
+      const { blob: encryptedCodeBlob, decryptionKey } =
+        await encryptCodeForTEE(inventionCode);
 
       const codeFormData = new FormData();
       codeFormData.append("file", encryptedCodeBlob, "encrypted_invention.bin");
@@ -288,15 +311,17 @@ export default function ListInventionPage() {
       const codeBuffer = await encryptedCodeBlob.arrayBuffer();
       const encryptedCodeHash = keccak256(toHex(new Uint8Array(codeBuffer)));
       // Mocking encryption key hash for frontend testing - in prod this comes from KMS
-      const encryptionKeyHash = keccak256(toHex(new Uint8Array(32))); 
+      const encryptionKeyHash = keccak256(toHex(new Uint8Array(32)));
 
       let txHash: `0x${string}`;
 
       if (selectedModel === MonetizationModel.NashNegotiation) {
         const args = preparedArgs as NashPreparedArgs;
-        txHash = await (writeContractAsync as unknown as (
-          config: unknown,
-        ) => Promise<`0x${string}`>)({
+        txHash = await (
+          writeContractAsync as unknown as (
+            config: unknown,
+          ) => Promise<`0x${string}`>
+        )({
           address: CONTRACTS.ADYTUM_MARKETPLACE,
           abi: ADYTUM_ABI,
           functionName: "listNashNegotiation",
@@ -317,9 +342,11 @@ export default function ListInventionPage() {
         });
       } else {
         const args = preparedArgs as PayPerUsePreparedArgs;
-        txHash = await (writeContractAsync as unknown as (
-          config: unknown,
-        ) => Promise<`0x${string}`>)({
+        txHash = await (
+          writeContractAsync as unknown as (
+            config: unknown,
+          ) => Promise<`0x${string}`>
+        )({
           address: CONTRACTS.ADYTUM_MARKETPLACE,
           abi: ADYTUM_ABI,
           functionName: "listPayPerUse",
@@ -358,7 +385,10 @@ export default function ListInventionPage() {
           });
 
           if (decoded.eventName === "InventionListed") {
-            const eventArgs = decoded.args as { id?: string; inventionId?: string };
+            const eventArgs = decoded.args as {
+              id?: string;
+              inventionId?: string;
+            };
             if (eventArgs.id) {
               newlyMintedInventionId = eventArgs.id.toString();
             } else if (eventArgs.inventionId) {
@@ -378,7 +408,37 @@ export default function ListInventionPage() {
         newlyMintedInventionId = txHash.slice(0, 15);
       }
 
-      // Save Nash Secrets safely now that tx is confirmed
+      // ==========================================
+      // 6. SIGN AND UPLOAD KEY TO TEE
+      // ==========================================
+      setStep("signing_key");
+
+      // 1. Define the exact message the TEE expects
+      const messageToSign = `STORE_KEY:${newlyMintedInventionId}`;
+
+      // 2. Prompt MetaMask to sign the message
+      const signature = await signMessageAsync({ message: messageToSign });
+
+      // 3. Send the payload to your Python TEE Worker
+      // Ensure you have NEXT_PUBLIC_TEE_URL set in your frontend .env file
+      const teeUrl = process.env.NEXT_PUBLIC_TEE_URL || "http://localhost:8001";
+      const teeResponse = await fetch(`${teeUrl}/store-key`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          invention_id: newlyMintedInventionId,
+          decryption_key: decryptionKey,
+          seller: address,
+          signature: signature,
+        }),
+      });
+
+      const teeData = await teeResponse.json();
+      if (!teeData.success) {
+        throw new Error(`TEE Worker Error: ${teeData.error}`);
+      }
+
+      // Save Nash Secrets safely now that tx is confirmed and key is stored
       if (
         selectedModel === MonetizationModel.NashNegotiation &&
         nashSaltToSave &&
@@ -463,7 +523,11 @@ export default function ListInventionPage() {
             Approving USDC
           </h2>
           <p className="text-adytum-smoke">
-            Please approve the required {selectedModel === MonetizationModel.NashNegotiation ? "Seller Bond" : "Listing Fee"} in your wallet.
+            Please approve the required{" "}
+            {selectedModel === MonetizationModel.NashNegotiation
+              ? "Seller Bond"
+              : "Listing Fee"}{" "}
+            in your wallet.
           </p>
         </div>
       </div>
@@ -515,6 +579,24 @@ export default function ListInventionPage() {
           </h2>
           <p className="text-adytum-smoke">
             Waiting for the block to be mined...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Secure TEE Key Storage Phase
+  if (step === "signing_key") {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <Shield className="h-16 w-16 text-adytum-amethyst-400 mx-auto mb-6 animate-pulse" />
+          <h2 className="font-display text-2xl font-bold text-white mb-2">
+            Secure Key Transfer
+          </h2>
+          <p className="text-adytum-smoke">
+            Please sign the message in your wallet to securely deposit your
+            decryption key into the TEE enclave.
           </p>
         </div>
       </div>
@@ -755,9 +837,9 @@ export default function ListInventionPage() {
               listingFee={payPerUseListingFee}
             />
           ) : (
-            <NashConfigForm 
-              config={nashConfig} 
-              setConfig={setNashConfig} 
+            <NashConfigForm
+              config={nashConfig}
+              setConfig={setNashConfig}
               minBond={minSellerBond}
             />
           )}
@@ -1056,7 +1138,10 @@ function PayPerUseConfigForm({
             max="10000"
             value={config.maxCallsPer30Days}
             onChange={(e) =>
-              setConfig({ ...config, maxCallsPer30Days: Number(e.target.value) })
+              setConfig({
+                ...config,
+                maxCallsPer30Days: Number(e.target.value),
+              })
             }
             className="input"
           />
@@ -1092,7 +1177,9 @@ function NashConfigForm({
   setConfig: React.Dispatch<React.SetStateAction<typeof config>>;
   minBond: bigint;
 }) {
-  const isBondTooLow = config.sellerBond ? parseUSDC(config.sellerBond) < minBond : true;
+  const isBondTooLow = config.sellerBond
+    ? parseUSDC(config.sellerBond) < minBond
+    : true;
 
   return (
     <div className="card p-6 space-y-4">
@@ -1136,8 +1223,11 @@ function NashConfigForm({
             placeholder={formatUSDC(minBond)}
             className={`input ${isBondTooLow ? "border-red-500 focus:border-red-500" : ""}`}
           />
-          <p className={`mt-1 text-xs ${isBondTooLow ? "text-red-400" : "text-adytum-smoke"}`}>
-            Minimum required bond is {formatUSDC(minBond)} USDC. Forfeited if you fail to reveal.
+          <p
+            className={`mt-1 text-xs ${isBondTooLow ? "text-red-400" : "text-adytum-smoke"}`}
+          >
+            Minimum required bond is {formatUSDC(minBond)} USDC. Forfeited if
+            you fail to reveal.
           </p>
         </div>
 
