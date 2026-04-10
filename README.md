@@ -460,7 +460,7 @@ await writeContract({ address: MARKETPLACE, functionName: "submitNashBid", ... }
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+BSL License - see [LICENSE](LICENSE) for details.
 
 ---
 
