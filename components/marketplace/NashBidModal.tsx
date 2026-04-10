@@ -5,6 +5,7 @@ import {
   useAccount,
   useWriteContract,
   useWaitForTransactionReceipt,
+  useSignMessage,
 } from "wagmi";
 import {
   X,
@@ -22,12 +23,11 @@ import { LiveTimeRemaining } from "@/components/ui/LiveTimeRemaining";
 import { useBlockTimeOffset } from "@/hooks/useBlockTimeOffset";
 import { CONTRACTS, parseUSDC, formatUSDC } from "@/config/wagmi";
 import { ADYTUM_ABI, ERC20_ABI } from "@/config/abi";
+import { generateNashBidHash, waitForKeyRelease } from "@/lib/api";
 import {
-  generateNashBidHash,
-  generateSalt,
-  waitForKeyRelease,
-} from "@/lib/api";
-import { generateBuyerKeyPair } from "@/lib/crypto";
+  deriveNashSecretsFromSignature,
+  decryptKeyFromTEE,
+} from "@/lib/crypto";
 
 interface NashBidModalProps {
   invention: NashInvention;
@@ -58,6 +58,7 @@ export function NashBidModal({
   isWinner,
 }: NashBidModalProps) {
   const { address } = useAccount();
+  const { signMessageAsync } = useSignMessage();
   const { config } = invention;
   const { timeOffset } = useBlockTimeOffset();
 
@@ -74,7 +75,6 @@ export function NashBidModal({
   );
 
   const [bidAmount, setBidAmount] = useState("");
-  const [salt, setSalt] = useState<`0x${string}` | null>(null);
   const [decryptionKey, setDecryptionKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -100,39 +100,41 @@ export function NashBidModal({
       setStep("submitting");
       setError(null);
 
+      // 1. Define the deterministic message
+      const messageToSign = `Generate Adytum Nash Key for Invention:\n${invention.id}`;
+
+      // 2. Prompt the user's wallet to sign it
+      const signature = await signMessageAsync({ message: messageToSign });
+
+      // 3. Derive BOTH the keypair and the unique salt mathematically
+      const { publicKey, salt: derivedSalt } =
+        deriveNashSecretsFromSignature(signature);
+
       const amount = parseUSDC(bidAmount);
-      const newSalt = generateSalt();
-      const bidHash = generateNashBidHash(amount, newSalt);
-
-      // Generate the X25519/secp256k1 keys for secure key delivery
-      const keypair = await generateBuyerKeyPair();
-
-      setSalt(newSalt);
-
-      // Store the private key so the frontend can decrypt the TEE response later
-      localStorage.setItem(
-        `nash_priv_key_${invention.id}_${address}`,
-        keypair.privateKey,
-      );
+      const bidHash = generateNashBidHash(amount, derivedSalt);
 
       submitBid({
         address: CONTRACTS.ADYTUM_MARKETPLACE,
         abi: ADYTUM_ABI,
         functionName: "submitNashBid",
-        args: [invention.id, bidHash, keypair.publicKey],
+        args: [invention.id, bidHash, publicKey],
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to submit bid");
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to submit bid. Did you reject the signature?",
+      );
       setStep("error");
     }
-  }, [bidAmount, address, invention.id, submitBid]);
+  }, [bidAmount, invention.id, submitBid, signMessageAsync]);
 
   // Handle submit confirmation
   useEffect(() => {
     if (submitConfirmed && step === "submitting") {
-      // Store salt in localStorage for reveal phase
-      if (salt) {
-        localStorage.setItem(`nash_salt_${invention.id}_${address}`, salt);
+      // We ONLY save the bidAmount as a UI convenience so they don't have to retype it.
+      // The salt and private key are NEVER saved to localStorage.
+      if (bidAmount) {
         localStorage.setItem(
           `nash_amount_${invention.id}_${address}`,
           bidAmount,
@@ -140,7 +142,7 @@ export function NashBidModal({
       }
       setStep("bid_success");
     }
-  }, [submitConfirmed, step, salt, bidAmount, invention.id, address]);
+  }, [submitConfirmed, step, bidAmount, invention.id, address]);
 
   // Handle approval routing
   useEffect(() => {
@@ -181,27 +183,31 @@ export function NashBidModal({
       setStep("revealing");
       setError(null);
 
-      // Retrieve stored values
-      const storedSalt = localStorage.getItem(
-        `nash_salt_${invention.id}_${address}`,
-      ) as `0x${string}`;
+      // 1. Get the bid amount (saved purely as a convenience)
       const storedAmount = localStorage.getItem(
         `nash_amount_${invention.id}_${address}`,
       );
 
-      if (!storedSalt || !storedAmount) {
+      if (!storedAmount) {
         throw new Error(
-          "Bid data not found. Did you submit from a different browser?",
+          "Bid amount not found. Please ensure you are on the same browser, or your cache was cleared.",
         );
       }
 
+      // 2. Ask user to sign the message to recover their salt
+      const messageToSign = `Generate Adytum Nash Key for Invention:\n${invention.id}`;
+      const signature = await signMessageAsync({ message: messageToSign });
+
+      // 3. Re-derive the exact same salt mathematically
+      const { salt: recoveredSalt } = deriveNashSecretsFromSignature(signature);
       const amount = parseUSDC(storedAmount);
 
+      // 4. Reveal!
       revealBid({
         address: CONTRACTS.ADYTUM_MARKETPLACE,
         abi: ADYTUM_ABI,
         functionName: "revealNashBid",
-        args: [invention.id, amount, storedSalt],
+        args: [invention.id, amount, recoveredSalt],
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to reveal bid");
@@ -214,16 +220,31 @@ export function NashBidModal({
       setStep("claiming");
       setError(null);
 
+      // 1. Wait for TEE to release the payload
       const result = await waitForKeyRelease(invention.id, address!);
 
-      // In production, you would fetch `nash_priv_key` from local storage
-      // and use it to decrypt `result.encrypted_key` locally here.
-      // For this implementation, we simulate it directly passing the encrypted key.
+      // 2. Ask the user to sign the EXACT same message to regenerate their key
+      const messageToSign = `Generate Adytum Nash Key for Invention:\n${invention.id}`;
+      const signature = await signMessageAsync({ message: messageToSign });
 
-      setDecryptionKey(result.encrypted_key);
+      // 3. Re-derive the exact same private key they used when bidding
+      const { privateKey } = deriveNashSecretsFromSignature(signature);
+
+      // 4. Decrypt the TEE payload natively in the browser
+      const plaintextFernetKey = await decryptKeyFromTEE(
+        result.encrypted_key,
+        privateKey,
+      );
+
+      setDecryptionKey(plaintextFernetKey);
       setStep("key_released");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to claim key");
+      console.error(err);
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to claim or decrypt key. Did you reject the signature?",
+      );
       setStep("error");
     }
   };
@@ -237,7 +258,6 @@ export function NashBidModal({
     ) {
       setStep("bid");
       setBidAmount("");
-      setSalt(null);
       setError(null);
     }
     onClose();
@@ -293,7 +313,7 @@ export function NashBidModal({
           {step === "submitting" && (
             <LoadingStep
               title="Submitting Sealed Bid"
-              description="Confirm the transaction in your wallet. Your bid amount is encrypted."
+              description="Please sign the message to generate your secure key and salt, then confirm the transaction."
             />
           )}
 
@@ -316,7 +336,7 @@ export function NashBidModal({
           {step === "revealing" && (
             <LoadingStep
               title="Revealing Bid"
-              description="Confirm the reveal transaction in your wallet..."
+              description="Please sign the message to recover your salt, then confirm the transaction..."
             />
           )}
 
@@ -328,8 +348,8 @@ export function NashBidModal({
 
           {step === "claiming" && (
             <LoadingStep
-              title="Claiming Decryption Key"
-              description="Requesting encrypted key release from the TEE..."
+              title="Claiming & Decrypting Key"
+              description="Please sign the message to recreate your secure key and decrypt the TEE payload..."
             />
           )}
 
@@ -440,8 +460,8 @@ function BidStep({
       <div className="flex items-start gap-2 p-3 bg-adytum-amethyst-500/10 rounded-lg border border-adytum-amethyst-500/20">
         <Lock className="h-4 w-4 text-adytum-amethyst-400 shrink-0 mt-0.5" />
         <p className="text-xs text-adytum-amethyst-200">
-          Your bid is cryptographically sealed and your public key attached. No
-          one (including the seller) can see your amount until the reveal phase.
+          Your bid is cryptographically sealed. You will be asked to sign a
+          message to generate a secure decryption key before submitting.
         </p>
       </div>
 
@@ -454,7 +474,7 @@ function BidStep({
         <Lock className="h-4 w-4 mr-2" />
         {config.requiredDeposit > BigInt(0)
           ? `Approve Deposit & Submit Bid`
-          : "Submit Sealed Bid"}
+          : "Sign & Submit Sealed Bid"}
       </button>
     </div>
   );
@@ -578,12 +598,13 @@ function ClaimKeyStep({ onClaim }: { onClaim: () => void }) {
         You Won!
       </h3>
       <p className="text-sm text-adytum-smoke mb-6">
-        Congratulations! You can now claim the encrypted decryption key to
-        access the full invention code.
+        Congratulations! You can now claim the decryption key from the TEE to
+        access the full invention code. You will be asked to sign a message to
+        verify your identity.
       </p>
       <button onClick={onClaim} className="btn-primary w-full">
         <Key className="h-4 w-4 mr-2" />
-        Claim Decryption Key
+        Sign & Claim Key
       </button>
     </div>
   );
@@ -609,16 +630,16 @@ function KeyReleasedStep({
       <div className="text-center">
         <CheckCircle className="h-12 w-12 text-adytum-vault mx-auto mb-3" />
         <h3 className="font-display text-lg font-semibold text-white mb-2">
-          Key Released!
+          Key Released & Decrypted!
         </h3>
         <p className="text-sm text-adytum-smoke">
-          Save this encrypted key securely. You&apos;ll need it and your private
-          key to decrypt the invention code.
+          Your browser successfully decrypted the payload from the TEE. Save
+          this Fernet key securely.
         </p>
       </div>
 
       <div className="p-3 bg-adytum-void-100 rounded-lg">
-        <label className="label">Encrypted Decryption Key</label>
+        <label className="label">Plaintext Fernet Decryption Key</label>
         <div className="flex gap-2">
           <code className="flex-1 p-2 bg-adytum-void-200 rounded text-xs text-white font-mono break-all">
             {decryptionKey}
@@ -634,7 +655,7 @@ function KeyReleasedStep({
         <p className="text-xs text-amber-200">
           <strong>Save this key!</strong> It will not be shown again. You can
           download the encrypted invention from IPFS and decrypt it locally
-          using your browser&apos;s stored private key.
+          using this Fernet key.
         </p>
       </div>
 
