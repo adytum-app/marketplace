@@ -414,7 +414,7 @@ export default function ListInventionPage() {
       setStep("signing_key");
 
       // 1. Define the exact message the TEE expects
-      const messageToSign = `STORE_KEY:${newlyMintedInventionId}`;
+      const messageToSign = `ADYTUM_STORE_KEY:${newlyMintedInventionId}`;
 
       // 2. Prompt MetaMask to sign the message
       const signature = await signMessageAsync({ message: messageToSign });
