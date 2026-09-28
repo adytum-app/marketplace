@@ -2,7 +2,7 @@
 
 import { parseUSDC, formatUSDC } from "@/config/wagmi";
 import { generateSalt, generateNashBidHash } from "@/lib/api";
-import { encryptCodeForTEE } from "@/lib/crypto";
+import { encryptCodeForTEE, hashDecryptionKey } from "@/lib/crypto";
 import { useState } from "react";
 import {
   useAccount,
@@ -310,8 +310,8 @@ export default function ListInventionPage() {
       // Calculate hashes needed for the smart contract struct parameters
       const codeBuffer = await encryptedCodeBlob.arrayBuffer();
       const encryptedCodeHash = keccak256(toHex(new Uint8Array(codeBuffer)));
-      // Mocking encryption key hash for frontend testing - in prod this comes from KMS
-      const encryptionKeyHash = keccak256(toHex(new Uint8Array(32)));
+      // On-chain commitment to the key that was actually used for this listing.
+      const encryptionKeyHash = hashDecryptionKey(decryptionKey);
 
       let txHash: `0x${string}`;
 
