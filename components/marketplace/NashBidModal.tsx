@@ -6,6 +6,7 @@ import {
   useWriteContract,
   useWaitForTransactionReceipt,
   useSignMessage,
+  usePublicClient,
 } from "wagmi";
 import {
   X,
@@ -27,7 +28,15 @@ import { generateNashBidHash, waitForKeyRelease } from "@/lib/api";
 import {
   deriveNashSecretsFromSignature,
   decryptKeyFromTEE,
+  hashDecryptionKey,
 } from "@/lib/crypto";
+
+// Listings minted before the key commitment was wired up all carry
+// keccak256(bytes32(0)) here, so this value proves nothing about the real key.
+const LEGACY_UNSET_KEY_HASH =
+  "0x290decd9548b62a8d60345a988386fc84ba6bc95484008f6362f93160ef3e563";
+const ZERO_HASH =
+  "0x0000000000000000000000000000000000000000000000000000000000000000";
 
 interface NashBidModalProps {
   invention: NashInvention;
@@ -59,6 +68,7 @@ export function NashBidModal({
 }: NashBidModalProps) {
   const { address } = useAccount();
   const { signMessageAsync } = useSignMessage();
+  const publicClient = usePublicClient();
   const { config } = invention;
   const { timeOffset } = useBlockTimeOffset();
 
@@ -77,6 +87,9 @@ export function NashBidModal({
   const [bidAmount, setBidAmount] = useState("");
   const [decryptionKey, setDecryptionKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Set when the released key could not be checked against an on-chain
+  // commitment. A genuine mismatch throws instead of landing here.
+  const [keyWarning, setKeyWarning] = useState<string | null>(null);
 
   // Contract writes
   const { writeContract: approve, data: approveTxHash } = useWriteContract();
@@ -219,6 +232,7 @@ export function NashBidModal({
     try {
       setStep("claiming");
       setError(null);
+      setKeyWarning(null);
 
       // 1. Wait for TEE to release the payload
       const result = await waitForKeyRelease(invention.id, address!);
@@ -235,6 +249,48 @@ export function NashBidModal({
         result.encrypted_key,
         privateKey,
       );
+
+      // 5. Check the key against the seller's on-chain commitment.
+      // Read it straight from the contract rather than trusting the invention
+      // prop: this check exists to catch a malicious or buggy TEE, so the value
+      // we compare against must not come through the same path as the key.
+      let committedHash: string | null = null;
+      try {
+        const onChain = await publicClient!.readContract({
+          address: CONTRACTS.ADYTUM_MARKETPLACE,
+          abi: ADYTUM_ABI,
+          functionName: "getInvention",
+          args: [invention.id],
+        });
+        committedHash = (onChain as { encryptionKeyHash: string })
+          .encryptionKeyHash;
+      } catch {
+        committedHash = null;
+      }
+
+      const verifiable =
+        committedHash !== null &&
+        committedHash.toLowerCase() !== ZERO_HASH &&
+        committedHash.toLowerCase() !== LEGACY_UNSET_KEY_HASH;
+
+      if (verifiable) {
+        const actualHash = hashDecryptionKey(plaintextFernetKey);
+        if (actualHash.toLowerCase() !== committedHash!.toLowerCase()) {
+          // Hard stop: the TEE handed back a key the seller never committed to.
+          throw new Error(
+            "Key verification failed. The key released by the TEE does not " +
+              "match the seller's on-chain commitment for this invention. " +
+              "Do not use it -- report this listing.",
+          );
+        }
+        setKeyWarning(null);
+      } else {
+        setKeyWarning(
+          committedHash === null
+            ? "Could not reach the contract to verify this key against the seller's on-chain commitment."
+            : "This listing predates on-chain key commitments, so the released key could not be verified.",
+        );
+      }
 
       setDecryptionKey(plaintextFernetKey);
       setStep("key_released");
@@ -356,6 +412,7 @@ export function NashBidModal({
           {step === "key_released" && decryptionKey && (
             <KeyReleasedStep
               decryptionKey={decryptionKey}
+              keyWarning={keyWarning}
               onClose={handleClose}
             />
           )}
@@ -612,9 +669,11 @@ function ClaimKeyStep({ onClaim }: { onClaim: () => void }) {
 
 function KeyReleasedStep({
   decryptionKey,
+  keyWarning,
   onClose,
 }: {
   decryptionKey: string;
+  keyWarning: string | null;
   onClose: () => void;
 }) {
   const [copied, setCopied] = useState(false);
@@ -633,10 +692,28 @@ function KeyReleasedStep({
           Key Released & Decrypted!
         </h3>
         <p className="text-sm text-adytum-smoke">
-          Your browser successfully decrypted the payload from the TEE. Save
-          this Fernet key securely.
+          {keyWarning
+            ? "Your browser decrypted the payload from the TEE. Save this Fernet key securely."
+            : "Your browser decrypted the payload and verified it against the seller's on-chain commitment. Save this Fernet key securely."}
         </p>
       </div>
+
+      {keyWarning ? (
+        <div className="flex items-start gap-2 p-3 bg-amber-500/10 rounded-lg border border-amber-500/20">
+          <ShieldAlert className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+          <p className="text-xs text-amber-200">
+            <strong>Key not verified.</strong> {keyWarning}
+          </p>
+        </div>
+      ) : (
+        <div className="flex items-start gap-2 p-3 bg-adytum-vault/10 rounded-lg border border-adytum-vault/20">
+          <CheckCircle className="h-4 w-4 text-adytum-vault shrink-0 mt-0.5" />
+          <p className="text-xs text-adytum-vault">
+            <strong>Key verified.</strong> Matches the seller&apos;s on-chain
+            commitment for this invention.
+          </p>
+        </div>
+      )}
 
       <div className="p-3 bg-adytum-void-100 rounded-lg">
         <label className="label">Plaintext Fernet Decryption Key</label>
